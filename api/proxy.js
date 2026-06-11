@@ -1,8 +1,8 @@
 const https = require('https');
 const http = require('http');
-const { URL } = require('url');
 
 export default async function handler(req, res) {
+    // CORS
     if (req.method === 'OPTIONS') {
         res.setHeader('Access-Control-Allow-Origin', '*');
         res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
@@ -10,13 +10,45 @@ export default async function handler(req, res) {
         return res.status(200).end();
     }
 
+    // Get the target URL from the query or path
     let targetUrl = req.query.url;
-
+    
     if (!targetUrl) {
-        return res.status(400).json({ error: 'No URL provided' });
+        return res.status(400).json({ error: 'No URL' });
     }
 
-    targetUrl = decodeURIComponent(targetUrl);
+    // If the URL doesn't have a protocol, it's a path-based request
+    if (!targetUrl.startsWith('http')) {
+        // Get the host from the request
+        const host = req.headers['x-forwarded-host'] || req.headers.host || '';
+        
+        // Extract the real target from the URL path
+        // The URL might look like: /proxy/youtube.com/results?search_query=test
+        // Or: /youtube.com/results?search_query=test
+        let path = targetUrl;
+        
+        // Remove /proxy/ prefix if present
+        if (path.startsWith('proxy/')) {
+            path = path.substring(6);
+        }
+        
+        // Get the full URL including query string
+        const queryString = req.url.includes('?') ? req.url.substring(req.url.indexOf('?')) : '';
+        
+        // Build the real URL
+        targetUrl = 'https://' + path + queryString;
+        
+        // Remove any duplicate query parameters
+        const urlObj = new URL(targetUrl);
+        targetUrl = urlObj.origin + urlObj.pathname + urlObj.search;
+    }
+
+    // Decode if it's still encoded
+    if (targetUrl.includes('%')) {
+        targetUrl = decodeURIComponent(targetUrl);
+    }
+
+    console.log('Proxying:', targetUrl);
 
     try {
         const parsedUrl = new URL(targetUrl);
@@ -34,7 +66,6 @@ export default async function handler(req, res) {
                 'Accept-Language': 'en-US,en;q=0.9',
                 'Accept-Encoding': 'identity',
                 'Cache-Control': 'no-cache',
-                'Pragma': 'no-cache',
             },
             rejectUnauthorized: false,
         };
@@ -57,10 +88,10 @@ export default async function handler(req, res) {
 
         const contentType = proxyResponse.headers['content-type'] || '';
 
-        // Set CORS headers
+        // Set CORS
         res.setHeader('Access-Control-Allow-Origin', '*');
         
-        // Remove restrictive headers
+        // Clean and set headers
         const cleanHeaders = { ...proxyResponse.headers };
         delete cleanHeaders['content-security-policy'];
         delete cleanHeaders['content-security-policy-report-only'];
@@ -69,7 +100,6 @@ export default async function handler(req, res) {
         delete cleanHeaders['content-encoding'];
         delete cleanHeaders['transfer-encoding'];
 
-        // Set cleaned headers
         Object.entries(cleanHeaders).forEach(([key, value]) => {
             if (!['content-encoding', 'transfer-encoding'].includes(key.toLowerCase())) {
                 res.setHeader(key, value);
@@ -82,26 +112,25 @@ export default async function handler(req, res) {
             
             const proxyHost = req.headers.host;
             const proxyProtocol = req.headers['x-forwarded-proto'] || 'https';
+            const proxyOrigin = `${proxyProtocol}://${proxyHost}`;
             
-            // THE ULTIMATE NAVIGATION INTERCEPTION SCRIPT
+            // Inject our navigation handler
             const navigationScript = `
 <script>
 (function() {
-    // ============================================
-    // ULTIMATE NAVIGATION INTERCEPTOR
-    // ============================================
+    const PROXY_ORIGIN = '${proxyOrigin}';
     
-    const PROXY_BASE = '/api/proxy?url=';
-    
-    function proxyURL(url) {
-        if (!url || url.startsWith('javascript:') || url.startsWith('data:') || url.startsWith('blob:') || url.startsWith('#')) {
+    function proxyUrl(url) {
+        if (!url || url.startsWith('javascript:') || url.startsWith('data:') || 
+            url.startsWith('blob:') || url.startsWith('#') || url.startsWith('mailto:')) {
             return url;
         }
         try {
-            // Resolve relative URLs
             const absolute = new URL(url, window.location.href).href;
             if (absolute.startsWith('http')) {
-                return PROXY_BASE + encodeURIComponent(absolute);
+                // Convert to path-based proxy URL
+                const urlObj = new URL(absolute);
+                return PROXY_ORIGIN + '/' + urlObj.host + urlObj.pathname + urlObj.search + urlObj.hash;
             }
             return absolute;
         } catch(e) {
@@ -109,37 +138,14 @@ export default async function handler(req, res) {
         }
     }
     
-    // 1. Override window.location
-    const locationProxy = new Proxy(window.location, {
-        get: function(target, prop) {
-            if (prop === 'assign' || prop === 'replace') {
-                return function(url) {
-                    window.parent.postMessage({
-                        type: 'NAVIGATE',
-                        url: url.toString()
-                    }, '*');
-                };
-            }
-            const value = target[prop];
-            return typeof value === 'function' ? value.bind(target) : value;
-        },
-        set: function(target, prop, value) {
-            if (prop === 'href') {
-                window.parent.postMessage({
-                    type: 'NAVIGATE',
-                    url: value.toString()
-                }, '*');
-                return true;
-            }
-            target[prop] = value;
-            return true;
+    // Intercept navigation
+    window.addEventListener('message', function(e) {
+        if (e.data && e.data.type === 'NAVIGATE') {
+            window.location.href = proxyUrl(e.data.url);
         }
     });
     
-    try { window.location = locationProxy; } catch(e) {}
-    try { document.location = locationProxy; } catch(e) {}
-    
-    // 2. Override history API
+    // Override history
     const origPushState = history.pushState;
     const origReplaceState = history.replaceState;
     
@@ -147,12 +153,8 @@ export default async function handler(req, res) {
         if (url) {
             try {
                 const absolute = new URL(url, window.location.href).href;
-                url = proxyURL(absolute);
-                // Notify parent of URL change
-                window.parent.postMessage({
-                    type: 'URL_CHANGE',
-                    url: absolute
-                }, '*');
+                url = proxyUrl(absolute);
+                window.parent.postMessage({ type: 'URL_CHANGE', url: absolute }, '*');
             } catch(e) {}
         }
         return origPushState.call(this, state, title, url);
@@ -162,45 +164,24 @@ export default async function handler(req, res) {
         if (url) {
             try {
                 const absolute = new URL(url, window.location.href).href;
-                url = proxyURL(absolute);
-                window.parent.postMessage({
-                    type: 'URL_CHANGE',
-                    url: absolute
-                }, '*');
+                url = proxyUrl(absolute);
+                window.parent.postMessage({ type: 'URL_CHANGE', url: absolute }, '*');
             } catch(e) {}
         }
         return origReplaceState.call(this, state, title, url);
     };
     
-    // 3. Override window.open
-    const origOpen = window.open;
-    window.open = function(url, target, features) {
-        if (url && typeof url === 'string') {
-            window.parent.postMessage({
-                type: 'NAVIGATE',
-                url: url.toString()
-            }, '*');
-            return { closed: false, close: function(){}, focus: function(){} };
-        }
-        return origOpen.apply(this, arguments);
-    };
-    
-    // 4. Intercept all link clicks (capture phase)
+    // Catch all clicks
     document.addEventListener('click', function(e) {
         let target = e.target;
         while (target && target !== document) {
-            if (target.tagName === 'A' || target.tagName === 'AREA') {
+            if ((target.tagName === 'A' || target.tagName === 'AREA') && target.href) {
                 const href = target.getAttribute('href');
                 if (href && href !== '#' && !href.startsWith('javascript:')) {
                     e.preventDefault();
                     e.stopPropagation();
-                    e.stopImmediatePropagation();
-                    
                     const absolute = new URL(href, window.location.href).href;
-                    window.parent.postMessage({
-                        type: 'NAVIGATE',
-                        url: absolute
-                    }, '*');
+                    window.location.href = proxyUrl(absolute);
                     return false;
                 }
             }
@@ -208,127 +189,86 @@ export default async function handler(req, res) {
         }
     }, true);
     
-    // 5. Intercept form submissions
+    // Catch form submissions
     document.addEventListener('submit', function(e) {
         const form = e.target;
         if (form.action && !form.action.startsWith('javascript:')) {
             e.preventDefault();
             e.stopPropagation();
-            
             let action = form.action;
             if (form.method.toLowerCase() === 'get') {
-                const formData = new FormData(form);
-                const params = new URLSearchParams(formData).toString();
-                if (params) {
-                    action += (action.includes('?') ? '&' : '?') + params;
-                }
+                const fd = new FormData(form);
+                const params = new URLSearchParams(fd).toString();
+                if (params) action += (action.includes('?') ? '&' : '?') + params;
             }
-            
             const absolute = new URL(action, window.location.href).href;
-            window.parent.postMessage({
-                type: 'NAVIGATE',
-                url: absolute
-            }, '*');
+            window.location.href = proxyUrl(absolute);
             return false;
         }
     }, true);
     
-    // 6. Override fetch
-    const origFetch = window.fetch;
-    window.fetch = function(url, options = {}) {
-        if (typeof url === 'string') {
-            url = proxyURL(url);
-        } else if (url instanceof Request) {
-            const newUrl = proxyURL(url.url);
-            url = new Request(newUrl, url);
-        }
-        return origFetch.call(this, url, options);
-    };
-    
-    // 7. Override XMLHttpRequest
-    const OrigXHR = window.XMLHttpRequest;
-    window.XMLHttpRequest = function() {
-        const xhr = new OrigXHR();
-        const origOpen = xhr.open;
-        xhr.open = function(method, url, ...args) {
-            if (typeof url === 'string') {
-                url = proxyURL(url);
-            }
-            return origOpen.call(this, method, url, ...args);
-        };
-        return xhr;
-    };
-    
-    // 8. Proxy all resource elements
+    // Proxy all resources
     function proxyElement(el) {
-        const attrs = {
-            'IMG': 'src', 'SCRIPT': 'src', 'LINK': 'href',
-            'VIDEO': 'src', 'AUDIO': 'src', 'SOURCE': 'src',
-            'IFRAME': 'src', 'OBJECT': 'data', 'EMBED': 'src',
-            'A': 'href', 'FORM': 'action'
-        };
-        
+        const attrs = { IMG: 'src', SCRIPT: 'src', LINK: 'href', VIDEO: 'src', 
+                       AUDIO: 'src', SOURCE: 'src', IFRAME: 'src', EMBED: 'src', 
+                       OBJECT: 'data', A: 'href', FORM: 'action' };
         const attr = attrs[el.tagName];
         if (attr && el.hasAttribute(attr)) {
-            const value = el.getAttribute(attr);
-            if (value && value.startsWith('http')) {
-                el.setAttribute(attr, proxyURL(value));
+            const val = el.getAttribute(attr);
+            if (val && val.startsWith('http') && !val.includes(PROXY_ORIGIN)) {
+                el.setAttribute(attr, proxyUrl(val));
             }
         }
     }
     
-    // Watch for new elements
-    const observer = new MutationObserver(function(mutations) {
-        mutations.forEach(function(mutation) {
-            mutation.addedNodes.forEach(function(node) {
+    new MutationObserver(function(mutations) {
+        mutations.forEach(function(m) {
+            m.addedNodes.forEach(function(node) {
                 if (node.nodeType === 1) {
                     proxyElement(node);
                     node.querySelectorAll('*').forEach(proxyElement);
                 }
             });
-            if (mutation.type === 'attributes' && mutation.target.nodeType === 1) {
-                proxyElement(mutation.target);
+            if (m.type === 'attributes' && m.target.nodeType === 1) {
+                proxyElement(m.target);
             }
         });
-    });
+    }).observe(document.documentElement, { childList: true, subtree: true, 
+        attributes: true, attributeFilter: ['src', 'href', 'action', 'data'] });
     
-    observer.observe(document.documentElement, {
-        childList: true,
-        subtree: true,
-        attributes: true,
-        attributeFilter: ['src', 'href', 'action', 'data']
-    });
-    
-    // Proxy existing elements
     document.querySelectorAll('*').forEach(proxyElement);
     
-    // 9. Monitor URL changes
-    let lastUrl = window.location.href;
-    setInterval(function() {
-        const currentUrl = window.location.href;
-        if (currentUrl !== lastUrl) {
-            lastUrl = currentUrl;
-            window.parent.postMessage({
-                type: 'URL_CHANGE',
-                url: currentUrl
-            }, '*');
-        }
-    }, 100);
+    // Override fetch and XHR
+    const origFetch = window.fetch;
+    window.fetch = function(url, opts) {
+        if (typeof url === 'string') url = proxyUrl(url);
+        return origFetch.call(this, url, opts);
+    };
     
-    // 10. Anti-detection
+    const OrigXHR = window.XMLHttpRequest;
+    window.XMLHttpRequest = function() {
+        const xhr = new OrigXHR();
+        const origOpen = xhr.open;
+        xhr.open = function(method, url, ...args) {
+            if (typeof url === 'string') url = proxyUrl(url);
+            return origOpen.call(this, method, url, ...args);
+        };
+        return xhr;
+    };
+    
+    // Anti-detection
     try { delete window.frameElement; } catch(e) {}
     Object.defineProperties(window, {
-        top: { get: function() { return window; }, configurable: false },
-        parent: { get: function() { return window; }, configurable: false },
-        frameElement: { get: function() { return null; }, configurable: false }
+        top: { get: () => window },
+        parent: { get: () => window },
+        frameElement: { get: () => null }
     });
     
-    console.log('🛡️ Navigation interceptor active');
+    console.log('🛡️ Path-based proxy active');
 })();
 </script>
 `;
             
-            // Inject navigation script
             html = html.replace(/<head[^>]*>/i, '$&' + navigationScript);
             
             // Add base tag
@@ -337,18 +277,12 @@ export default async function handler(req, res) {
             }
             
             // Server-side URL rewriting as backup
-            html = html.replace(/(src|href|action|data)=["'](https?:)?\/\/(?!temunet\.vercel\.app)([^"']+)["']/gi, 
-                (match, attr, protocol, url) => {
-                    const fullUrl = (protocol || 'https:') + '//' + url;
-                    return attr + '="/api/proxy?url=' + encodeURIComponent(fullUrl) + '"';
-                }
-            );
-            
-            // Fix CSS urls
-            html = html.replace(/url\(["']?(https?:)?\/\/(?!temunet\.vercel\.app)([^)"']+)["']?\)/gi,
-                (match, protocol, url) => {
-                    const fullUrl = (protocol || 'https:') + '//' + url;
-                    return 'url("/api/proxy?url=' + encodeURIComponent(fullUrl) + '")';
+            html = html.replace(/(src|href|action|data)=["'](https?:)?\/\/([^"']+)["']/gi, 
+                (match, attr, protocol, domain) => {
+                    const fullUrl = (protocol || 'https:') + '//' + domain;
+                    if (domain.includes(proxyHost)) return match;
+                    const urlObj = new URL(fullUrl);
+                    return attr + '="/' + urlObj.host + urlObj.pathname + urlObj.search + '"';
                 }
             );
             
@@ -356,33 +290,20 @@ export default async function handler(req, res) {
             return res.send(html);
         }
 
-        // Handle CSS
+        // Other content types
         if (contentType.includes('text/css')) {
             let css = proxyResponse.body.toString('utf8');
-            css = css.replace(/url\(["']?(https?:)?\/\/(?!temunet\.vercel\.app)([^)"']+)["']?\)/gi,
-                (match, protocol, url) => {
-                    const fullUrl = (protocol || 'https:') + '//' + url;
-                    return 'url("/api/proxy?url=' + encodeURIComponent(fullUrl) + '")';
+            css = css.replace(/url\(["']?(https?:)?\/\/([^)"']+)["']?\)/gi,
+                (match, protocol, domain) => {
+                    const fullUrl = (protocol || 'https:') + '//' + domain;
+                    const urlObj = new URL(fullUrl);
+                    return 'url("/' + urlObj.host + urlObj.pathname + urlObj.search + '")';
                 }
             );
             res.setHeader('Content-Type', 'text/css; charset=utf-8');
             return res.send(css);
         }
 
-        // Handle JavaScript
-        if (contentType.includes('javascript')) {
-            let js = proxyResponse.body.toString('utf8');
-            js = js.replace(/(["'`])(https?:)?\/\/(?!temunet\.vercel\.app)([^"'`]+)\1/g,
-                (match, quote, protocol, url) => {
-                    const fullUrl = (protocol || 'https:') + '//' + url;
-                    return quote + '/api/proxy?url=' + encodeURIComponent(fullUrl) + quote;
-                }
-            );
-            res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
-            return res.send(js);
-        }
-
-        // Other content
         res.status(proxyResponse.statusCode);
         return res.send(proxyResponse.body);
 
