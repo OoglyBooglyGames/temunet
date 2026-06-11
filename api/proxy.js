@@ -2,13 +2,28 @@ const https = require('https');
 const http = require('http');
 
 export default async function handler(req, res) {
+    // CORS
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', '*');
+    
     if (req.method === 'OPTIONS') return res.status(200).end();
 
-    let targetUrl = decodeURIComponent(req.query.url || '');
-    if (!targetUrl) return res.status(400).send('No URL');
+    // Get URL from query parameter
+    let targetUrl = req.query.url;
+    
+    if (!targetUrl) {
+        return res.status(400).send('No URL provided');
+    }
+    
+    targetUrl = decodeURIComponent(targetUrl);
+    
+    // Ensure URL has protocol
+    if (!targetUrl.startsWith('http://') && !targetUrl.startsWith('https://')) {
+        targetUrl = 'https://' + targetUrl;
+    }
+
+    console.log('Proxying:', targetUrl);
 
     try {
         const parsedUrl = new URL(targetUrl);
@@ -31,13 +46,15 @@ export default async function handler(req, res) {
 
         const response = await new Promise((resolve, reject) => {
             const proxyReq = client.request(options, (proxyRes) => {
-                // Handle redirects
+                // Handle redirects - send back /proxy/ path
                 if (proxyRes.statusCode >= 300 && proxyRes.statusCode < 400 && proxyRes.headers.location) {
                     let redirectUrl = proxyRes.headers.location;
                     if (!redirectUrl.startsWith('http')) {
                         redirectUrl = new URL(redirectUrl, targetUrl).href;
                     }
-                    res.writeHead(302, { 'Location': '/proxy/' + encodeURIComponent(redirectUrl) });
+                    res.writeHead(302, {
+                        'Location': '/proxy/' + encodeURIComponent(redirectUrl)
+                    });
                     res.end();
                     return;
                 }
@@ -51,7 +68,10 @@ export default async function handler(req, res) {
                 }));
             });
             proxyReq.on('error', reject);
-            proxyReq.setTimeout(15000, () => { proxyReq.destroy(); reject(new Error('Timeout')); });
+            proxyReq.setTimeout(15000, () => {
+                proxyReq.destroy();
+                reject(new Error('Timeout'));
+            });
             proxyReq.end();
         });
 
@@ -65,44 +85,44 @@ export default async function handler(req, res) {
          'frame-options', 'x-xss-protection', 'content-encoding', 
          'transfer-encoding'].forEach(h => delete response.headers[h]);
 
+        // Set cleaned headers
         Object.entries(response.headers).forEach(([key, value]) => {
             if (!['content-encoding', 'transfer-encoding'].includes(key.toLowerCase())) {
                 res.setHeader(key, value);
             }
         });
 
-        // No more injecting scripts that fight YouTube
-        // Just serve the content and let the Service Worker handle routing
-        
         if (contentType.includes('text/html')) {
             let html = response.body.toString('utf8');
             
-            // Only add base tag - no script injection needed!
+            // Add base tag
             if (!html.includes('<base ')) {
                 html = html.replace(/<head[^>]*>/i, '$&<base href="' + targetUrl + '">');
             }
             
-            // Rewrite URLs to use /proxy/ path (which Service Worker catches)
+            // Rewrite all absolute URLs to /proxy/ path
             html = html.replace(/(src|href|action|data)=["']((?:https?:)?\/\/)([^"']+)["']/gi,
-                (match, attr, protocol, rest) => {
+                function(match, attr, protocol, rest) {
                     const fullUrl = (protocol.startsWith('http') ? '' : 'https:') + protocol + rest;
                     return attr + '="/proxy/' + encodeURIComponent(fullUrl) + '"';
                 }
             );
             
             // Rewrite relative URLs
-            html = html.replace(/(src|href|action|data)=["'](?!https?:\/\/|\/proxy\/|javascript:|data:|#|mailto:)([^"']+)["']/gi,
-                (match, attr, relativeUrl) => {
+            html = html.replace(/(src|href|action|data)=["'](?!https?:\/\/|\/proxy\/|javascript:|data:|#|mailto:|tel:)([^"']+)["']/gi,
+                function(match, attr, relativeUrl) {
                     try {
                         const absolute = new URL(relativeUrl, targetUrl).href;
                         return attr + '="/proxy/' + encodeURIComponent(absolute) + '"';
-                    } catch(e) { return match; }
+                    } catch(e) {
+                        return match;
+                    }
                 }
             );
             
             // Fix CSS urls
             html = html.replace(/url\(["']?((?:https?:)?\/\/[^)"']+)["']?\)/gi,
-                (match, url) => {
+                function(match, url) {
                     const fullUrl = url.startsWith('http') ? url : 'https:' + url;
                     return 'url("/proxy/' + encodeURIComponent(fullUrl) + '")';
                 }
@@ -115,7 +135,7 @@ export default async function handler(req, res) {
         if (contentType.includes('text/css')) {
             let css = response.body.toString('utf8');
             css = css.replace(/url\(["']?((?:https?:)?\/\/[^)"']+)["']?\)/gi,
-                (match, url) => {
+                function(match, url) {
                     const fullUrl = url.startsWith('http') ? url : 'https:' + url;
                     return 'url("/proxy/' + encodeURIComponent(fullUrl) + '")';
                 }
@@ -127,7 +147,7 @@ export default async function handler(req, res) {
         if (contentType.includes('javascript')) {
             let js = response.body.toString('utf8');
             js = js.replace(/(["'`])((?:https?:)?\/\/[^"'`]+)\1/g,
-                (match, quote, url) => {
+                function(match, quote, url) {
                     const fullUrl = url.startsWith('http') ? url : 'https:' + url;
                     return quote + '/proxy/' + encodeURIComponent(fullUrl) + quote;
                 }
@@ -140,6 +160,7 @@ export default async function handler(req, res) {
         return res.send(response.body);
 
     } catch (error) {
-        return res.status(502).send('Error: ' + error.message);
+        console.error('Proxy error:', error.message);
+        return res.status(502).send('Proxy Error: ' + error.message);
     }
 }
