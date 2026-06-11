@@ -8,7 +8,6 @@ export default async function handler(req, res) {
     if (req.method === 'OPTIONS') return res.status(200).end();
 
     let targetUrl = '';
-    
     if (req.query.url) {
         targetUrl = decodeURIComponent(req.query.url);
     } else if (req.query.catchall) {
