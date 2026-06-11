@@ -7,15 +7,14 @@
     <style>
         *{margin:0;padding:0;box-sizing:border-box}
         body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#0a0a0a;height:100vh;display:flex;flex-direction:column;overflow:hidden}
-        #toolbar{background:#111;padding:10px 15px;display:flex;gap:8px;align-items:center;border-bottom:1px solid #222;z-index:10000;flex-shrink:0}
+        #toolbar{background:#111;padding:10px 15px;display:flex;gap:8px;align-items:center;border-bottom:1px solid #222;z-index:10000;flex-shrink:0;min-height:50px}
         #urlInput{flex:1;min-width:200px;padding:10px 15px;border:1px solid #333;background:#1a1a1a;color:#fff;border-radius:20px;font-size:13px;outline:none}
         #urlInput:focus{border-color:#f00}
         button{padding:10px 20px;border:none;border-radius:20px;font-size:13px;font-weight:600;cursor:pointer;background:#1a1a1a;color:#fff;white-space:nowrap}
         button:hover{background:#2a2a2a}
         #goBtn{background:#f00}
         .quickBtn{padding:8px 15px;font-size:12px}
-        #frameContainer{flex:1;position:relative}
-        #proxyFrame{width:100%;height:100%;border:none;background:#fff}
+        #content{flex:1;position:relative;background:#fff;overflow:auto}
         #loading{position:fixed;top:0;left:0;height:3px;background:#f00;display:none;z-index:10001;width:100%;animation:pulse 1s infinite}
         @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.3}}
         .navBtn{padding:8px 10px;min-width:35px;border-radius:50%;font-size:16px}
@@ -27,7 +26,7 @@
         <button class="navBtn" id="backBtn">←</button>
         <button class="navBtn" id="forwardBtn">→</button>
         <button class="navBtn" id="refreshBtn">↻</button>
-        <input type="text" id="urlInput" placeholder="Enter URL..." autocomplete="off" spellcheck="false">
+        <input type="text" id="urlInput" placeholder="Enter URL or search..." autocomplete="off" spellcheck="false">
         <button id="goBtn">Go</button>
         <button class="quickBtn" data-url="https://www.youtube.com">▶ YouTube</button>
         <button class="quickBtn" data-url="https://www.reddit.com">Reddit</button>
@@ -35,53 +34,185 @@
         <span id="status">Ready</span>
     </div>
     <div id="loading"></div>
-    <div id="frameContainer">
-        <iframe id="proxyFrame" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads allow-presentation allow-top-navigation-by-user-activation"></iframe>
-    </div>
+    <div id="content"></div>
     
     <script>
+        // Register Service Worker
         if ('serviceWorker' in navigator) {
             navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(() => {});
         }
         
-        const iframe = document.getElementById('proxyFrame');
+        const content = document.getElementById('content');
         const urlInput = document.getElementById('urlInput');
         const loading = document.getElementById('loading');
         const status = document.getElementById('status');
         let historyStack = [], historyIndex = -1;
+        let currentUrl = '';
         
-        function navigateTo(url, addToHistory) {
+        async function loadPage(url, addToHistory) {
             if (addToHistory === undefined) addToHistory = true;
+            
             loading.style.display = 'block';
             status.textContent = 'Loading...';
             urlInput.value = url;
+            currentUrl = url;
+            
             if (addToHistory) {
-                if (historyIndex < historyStack.length - 1) historyStack = historyStack.slice(0, historyIndex + 1);
+                if (historyIndex < historyStack.length - 1) {
+                    historyStack = historyStack.slice(0, historyIndex + 1);
+                }
                 historyStack.push(url);
                 historyIndex = historyStack.length - 1;
-                try { history.pushState({ url, index: historyIndex }, '', '?url=' + encodeURIComponent(url)); } catch(e) {}
+                try {
+                    history.pushState({ url, index: historyIndex }, '', '?url=' + encodeURIComponent(url));
+                } catch(e) {}
             }
-            iframe.src = '/api/proxy?url=' + encodeURIComponent(url);
+            
+            try {
+                const proxyUrl = '/api/proxy?url=' + encodeURIComponent(url);
+                const response = await fetch(proxyUrl);
+                const html = await response.text();
+                
+                // Create a temporary container
+                const temp = document.createElement('div');
+                temp.innerHTML = html;
+                
+                // Extract and execute scripts in order
+                const scripts = [];
+                const scriptElements = temp.querySelectorAll('script');
+                
+                // First, move all non-script content
+                content.innerHTML = '';
+                while (temp.firstChild) {
+                    if (temp.firstChild.tagName === 'SCRIPT') {
+                        scripts.push(temp.firstChild);
+                        temp.removeChild(temp.firstChild);
+                    } else {
+                        content.appendChild(temp.firstChild);
+                    }
+                }
+                
+                // Now execute scripts one by one
+                for (const oldScript of scripts) {
+                    const newScript = document.createElement('script');
+                    
+                    // Copy all attributes
+                    for (const attr of oldScript.attributes) {
+                        newScript.setAttribute(attr.name, attr.value);
+                    }
+                    
+                    // Copy inline code
+                    if (oldScript.textContent) {
+                        newScript.textContent = oldScript.textContent;
+                    }
+                    
+                    content.appendChild(newScript);
+                }
+                
+                // Intercept all clicks to keep navigation in proxy
+                content.addEventListener('click', function(e) {
+                    let target = e.target;
+                    while (target && target !== content) {
+                        if ((target.tagName === 'A' || target.tagName === 'AREA') && target.href) {
+                            const href = target.getAttribute('href');
+                            if (href && href !== '#' && !href.startsWith('javascript:')) {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                try {
+                                    let absolute = new URL(href, currentUrl).href;
+                                    if (absolute.startsWith('http')) {
+                                        loadPage(absolute);
+                                    }
+                                } catch(ex) {}
+                                return false;
+                            }
+                        }
+                        target = target.parentElement;
+                    }
+                }, true);
+                
+                // Intercept form submissions
+                content.addEventListener('submit', function(e) {
+                    if (e.target.action && !e.target.action.startsWith('javascript:')) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        try {
+                            let action = e.target.action;
+                            if (e.target.method.toLowerCase() === 'get') {
+                                const fd = new FormData(e.target);
+                                const params = new URLSearchParams(fd).toString();
+                                if (params) action += (action.includes('?') ? '&' : '?') + params;
+                            }
+                            let absolute = new URL(action, currentUrl).href;
+                            if (absolute.startsWith('http')) {
+                                loadPage(absolute);
+                            }
+                        } catch(ex) {}
+                        return false;
+                    }
+                }, true);
+                
+                loading.style.display = 'none';
+                status.textContent = 'Loaded';
+                
+            } catch (error) {
+                console.error('Load failed:', error);
+                loading.style.display = 'none';
+                status.textContent = 'Error loading page';
+                content.innerHTML = '<div style="display:flex;justify-content:center;align-items:center;height:100%;background:#0a0a0a;color:#fff;font-family:sans-serif;"><div style="text-align:center"><h2>Failed to load</h2><p>' + error.message + '</p></div></div>';
+            }
         }
         
         function navigate() {
             let url = urlInput.value.trim();
             if (!url) return;
-            if (!url.startsWith('http')) url = url.includes('.') && !url.includes(' ') ? 'https://' + url : 'https://www.google.com/search?q=' + encodeURIComponent(url);
-            navigateTo(url);
+            if (!url.startsWith('http')) {
+                url = url.includes('.') && !url.includes(' ') ? 'https://' + url : 'https://www.google.com/search?q=' + encodeURIComponent(url);
+            }
+            loadPage(url);
         }
         
-        iframe.addEventListener('load', () => { loading.style.display = 'none'; status.textContent = 'Loaded'; });
         document.getElementById('goBtn').addEventListener('click', navigate);
-        urlInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') navigate(); });
-        document.querySelectorAll('.quickBtn').forEach(btn => { btn.addEventListener('click', () => { urlInput.value = btn.dataset.url; navigate(); }); });
-        document.getElementById('backBtn').addEventListener('click', () => { if (historyIndex > 0) { historyIndex--; navigateTo(historyStack[historyIndex], false); } });
-        document.getElementById('forwardBtn').addEventListener('click', () => { if (historyIndex < historyStack.length - 1) { historyIndex++; navigateTo(historyStack[historyIndex], false); } });
-        document.getElementById('refreshBtn').addEventListener('click', () => { if (historyStack[historyIndex]) navigateTo(historyStack[historyIndex], false); });
-        window.addEventListener('popstate', (e) => { if (e.state && e.state.url) { urlInput.value = e.state.url; navigateTo(e.state.url, false); } });
+        urlInput.addEventListener('keypress', function(e) { if (e.key === 'Enter') navigate(); });
         
+        document.querySelectorAll('.quickBtn').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                urlInput.value = this.dataset.url;
+                navigate();
+            });
+        });
+        
+        document.getElementById('backBtn').addEventListener('click', function() {
+            if (historyIndex > 0) {
+                historyIndex--;
+                loadPage(historyStack[historyIndex], false);
+            }
+        });
+        
+        document.getElementById('forwardBtn').addEventListener('click', function() {
+            if (historyIndex < historyStack.length - 1) {
+                historyIndex++;
+                loadPage(historyStack[historyIndex], false);
+            }
+        });
+        
+        document.getElementById('refreshBtn').addEventListener('click', function() {
+            if (currentUrl) loadPage(currentUrl, false);
+        });
+        
+        window.addEventListener('popstate', function(e) {
+            if (e.state && e.state.url) {
+                urlInput.value = e.state.url;
+                loadPage(e.state.url, false);
+            }
+        });
+        
+        // Load initial URL
         const params = new URLSearchParams(window.location.search);
-        if (params.get('url')) { urlInput.value = decodeURIComponent(params.get('url')); navigate(); }
+        if (params.get('url')) {
+            urlInput.value = decodeURIComponent(params.get('url'));
+            navigate();
+        }
     </script>
 </body>
 </html>
