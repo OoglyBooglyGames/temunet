@@ -7,20 +7,18 @@
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0a0a0a; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
-        #toolbar { background: #111; padding: 10px 15px; display: flex; gap: 8px; align-items: center; border-bottom: 1px solid #222; z-index: 10000; flex-shrink: 0; flex-wrap: wrap; }
-        #urlInput { flex: 1; min-width: 200px; padding: 10px 15px; border: 1px solid #333; background: #1a1a1a; color: #fff; border-radius: 20px; font-size: 13px; outline: none; transition: 0.2s; }
-        #urlInput:focus { border-color: #ff0000; box-shadow: 0 0 0 2px rgba(255, 0, 0, 0.2); }
-        button { padding: 10px 20px; border: none; border-radius: 20px; font-size: 13px; font-weight: 600; cursor: pointer; transition: 0.2s; background: #1a1a1a; color: #fff; white-space: nowrap; }
+        #toolbar { background: #111; padding: 10px 15px; display: flex; gap: 8px; align-items: center; border-bottom: 1px solid #222; z-index: 10000; flex-shrink: 0; }
+        #urlInput { flex: 1; min-width: 200px; padding: 10px 15px; border: 1px solid #333; background: #1a1a1a; color: #fff; border-radius: 20px; font-size: 13px; outline: none; }
+        #urlInput:focus { border-color: #ff0000; }
+        button { padding: 10px 20px; border: none; border-radius: 20px; font-size: 13px; font-weight: 600; cursor: pointer; background: #1a1a1a; color: #fff; white-space: nowrap; }
         button:hover { background: #2a2a2a; }
-        #goBtn { background: #ff0000; color: white; }
-        #goBtn:hover { background: #cc0000; }
+        #goBtn { background: #ff0000; }
         .quickBtn { padding: 8px 15px; font-size: 12px; }
-        #frameContainer { flex: 1; position: relative; }
+        #frameContainer { flex: 1; }
         #proxyFrame { width: 100%; height: 100%; border: none; background: #fff; }
         #loadingBar { position: fixed; top: 0; left: 0; height: 3px; background: linear-gradient(90deg, #ff0000, #ff4444, #ff0000); background-size: 200% 100%; animation: loadingAnim 1.5s linear infinite; display: none; z-index: 10001; }
         @keyframes loadingAnim { 0% { background-position: 0% 50%; } 100% { background-position: 200% 50%; } }
-        .navBtn { padding: 8px 10px; min-width: 35px; background: #1a1a1a; border: 1px solid #333; border-radius: 50%; cursor: pointer; color: #fff; font-size: 16px; display: flex; align-items: center; justify-content: center; }
-        .navBtn:hover { background: #2a2a2a; border-color: #ff0000; }
+        .navBtn { padding: 8px 10px; min-width: 35px; border-radius: 50%; font-size: 16px; }
         #status { color: #666; font-size: 11px; margin-left: auto; }
     </style>
 </head>
@@ -31,14 +29,14 @@
         <button class="navBtn" id="refreshBtn">↻</button>
         <input type="text" id="urlInput" placeholder="Enter URL or search..." autocomplete="off" spellcheck="false">
         <button id="goBtn">Go</button>
-        <button class="quickBtn" data-url="https://www.youtube.com">▶ YouTube</button>
+        <button class="quickBtn" data-url="https://www.youtube.com">YouTube</button>
         <button class="quickBtn" data-url="https://www.reddit.com">Reddit</button>
-        <button class="quickBtn" data-url="https://x.com">𝕏 X</button>
+        <button class="quickBtn" data-url="https://x.com">X</button>
         <span id="status">Ready</span>
     </div>
     <div id="loadingBar"></div>
     <div id="frameContainer">
-        <iframe id="proxyFrame" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads allow-presentation"></iframe>
+        <iframe id="proxyFrame" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads allow-presentation allow-top-navigation-by-user-activation"></iframe>
     </div>
     
     <script>
@@ -48,23 +46,16 @@
         const status = document.getElementById('status');
         let historyStack = [], historyIndex = -1;
         
-        function toProxyPath(url) {
-            const u = new URL(url);
-            return '/' + u.host + u.pathname + u.search + u.hash;
-        }
-        
         function navigateTo(url) {
             loadingBar.style.display = 'block';
             status.textContent = 'Loading...';
             urlInput.value = url;
             
-            if (historyIndex < historyStack.length - 1) {
-                historyStack = historyStack.slice(0, historyIndex + 1);
-            }
+            if (historyIndex < historyStack.length - 1) historyStack = historyStack.slice(0, historyIndex + 1);
             historyStack.push(url);
             historyIndex = historyStack.length - 1;
             
-            iframe.src = toProxyPath(url);
+            iframe.src = '/api/proxy?url=' + encodeURIComponent(url);
             history.pushState({ url, index: historyIndex }, '', '?url=' + encodeURIComponent(url));
         }
         
@@ -79,8 +70,16 @@
             navigateTo(url);
         }
         
+        // Listen for navigation messages from iframe
+        window.addEventListener('message', function(e) {
+            if (e.data.type === 'NAVIGATE') {
+                navigateTo(e.data.url);
+            } else if (e.data.type === 'URL_CHANGE') {
+                urlInput.value = e.data.url;
+            }
+        });
+        
         iframe.onload = () => { loadingBar.style.display = 'none'; status.textContent = 'Loaded'; };
-        iframe.onerror = () => { loadingBar.style.display = 'none'; status.textContent = 'Error'; };
         
         document.getElementById('goBtn').onclick = navigate;
         urlInput.onkeypress = (e) => { if (e.key === 'Enter') navigate(); };
@@ -92,25 +91,18 @@
         document.getElementById('backBtn').onclick = () => {
             if (historyIndex > 0) { historyIndex--; navigateTo(historyStack[historyIndex]); }
         };
-        
         document.getElementById('forwardBtn').onclick = () => {
             if (historyIndex < historyStack.length - 1) { historyIndex++; navigateTo(historyStack[historyIndex]); }
         };
-        
         document.getElementById('refreshBtn').onclick = () => {
             if (historyStack[historyIndex]) navigateTo(historyStack[historyIndex]);
         };
-        
-        window.addEventListener('message', (e) => {
-            if (e.data.type === 'URL_CHANGE') {
-                urlInput.value = e.data.url;
-            }
-        });
         
         window.addEventListener('popstate', (e) => {
             if (e.state && e.state.url) navigateTo(e.state.url);
         });
         
+        // Load initial URL
         const params = new URLSearchParams(window.location.search);
         if (params.get('url')) {
             urlInput.value = decodeURIComponent(params.get('url'));
