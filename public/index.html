@@ -26,7 +26,7 @@
         <button class="navBtn" id="backBtn">←</button>
         <button class="navBtn" id="forwardBtn">→</button>
         <button class="navBtn" id="refreshBtn">↻</button>
-        <input type="text" id="urlInput" placeholder="Enter URL or search..." autocomplete="off" spellcheck="false">
+        <input type="text" id="urlInput" placeholder="Enter URL..." autocomplete="off" spellcheck="false">
         <button id="goBtn">Go</button>
         <button class="quickBtn" data-url="https://www.youtube.com">▶ YouTube</button>
         <button class="quickBtn" data-url="https://www.reddit.com">Reddit</button>
@@ -37,7 +37,6 @@
     <div id="content"></div>
     
     <script>
-        // Register Service Worker
         if ('serviceWorker' in navigator) {
             navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(() => {});
         }
@@ -48,8 +47,31 @@
         const status = document.getElementById('status');
         let historyStack = [], historyIndex = -1;
         let currentUrl = '';
+        let isLoading = false;
+        
+        // Handle navigation messages from injected page
+        window.addEventListener('message', function(e) {
+            if (!e.data || !e.data.type) return;
+            
+            if (e.data.type === 'NAVIGATE') {
+                // Page wants to navigate somewhere
+                if (!isLoading) {
+                    loadPage(e.data.url);
+                }
+            } else if (e.data.type === 'URL_CHANGE') {
+                // Just update the URL bar
+                urlInput.value = e.data.url;
+                currentUrl = e.data.url;
+                try {
+                    history.replaceState({ url: e.data.url, index: historyIndex }, '', '?url=' + encodeURIComponent(e.data.url));
+                } catch(ex) {}
+            }
+        });
         
         async function loadPage(url, addToHistory) {
+            if (isLoading) return;
+            isLoading = true;
+            
             if (addToHistory === undefined) addToHistory = true;
             
             loading.style.display = 'block';
@@ -73,92 +95,41 @@
                 const response = await fetch(proxyUrl);
                 const html = await response.text();
                 
-                // Create a temporary container
                 const temp = document.createElement('div');
                 temp.innerHTML = html;
                 
-                // Extract and execute scripts in order
                 const scripts = [];
-                const scriptElements = temp.querySelectorAll('script');
-                
-                // First, move all non-script content
                 content.innerHTML = '';
+                
                 while (temp.firstChild) {
                     if (temp.firstChild.tagName === 'SCRIPT') {
-                        scripts.push(temp.firstChild);
+                        scripts.push(temp.firstChild.cloneNode(true));
                         temp.removeChild(temp.firstChild);
                     } else {
                         content.appendChild(temp.firstChild);
                     }
                 }
                 
-                // Now execute scripts one by one
                 for (const oldScript of scripts) {
                     const newScript = document.createElement('script');
-                    
-                    // Copy all attributes
                     for (const attr of oldScript.attributes) {
                         newScript.setAttribute(attr.name, attr.value);
                     }
-                    
-                    // Copy inline code
                     if (oldScript.textContent) {
                         newScript.textContent = oldScript.textContent;
                     }
-                    
                     content.appendChild(newScript);
                 }
                 
-                // Intercept all clicks to keep navigation in proxy
-                content.addEventListener('click', function(e) {
-                    let target = e.target;
-                    while (target && target !== content) {
-                        if ((target.tagName === 'A' || target.tagName === 'AREA') && target.href) {
-                            const href = target.getAttribute('href');
-                            if (href && href !== '#' && !href.startsWith('javascript:')) {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                try {
-                                    let absolute = new URL(href, currentUrl).href;
-                                    if (absolute.startsWith('http')) {
-                                        loadPage(absolute);
-                                    }
-                                } catch(ex) {}
-                                return false;
-                            }
-                        }
-                        target = target.parentElement;
-                    }
-                }, true);
-                
-                // Intercept form submissions
-                content.addEventListener('submit', function(e) {
-                    if (e.target.action && !e.target.action.startsWith('javascript:')) {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        try {
-                            let action = e.target.action;
-                            if (e.target.method.toLowerCase() === 'get') {
-                                const fd = new FormData(e.target);
-                                const params = new URLSearchParams(fd).toString();
-                                if (params) action += (action.includes('?') ? '&' : '?') + params;
-                            }
-                            let absolute = new URL(action, currentUrl).href;
-                            if (absolute.startsWith('http')) {
-                                loadPage(absolute);
-                            }
-                        } catch(ex) {}
-                        return false;
-                    }
-                }, true);
-                
                 loading.style.display = 'none';
                 status.textContent = 'Loaded';
+                isLoading = false;
                 
             } catch (error) {
                 console.error('Load failed:', error);
                 loading.style.display = 'none';
-                status.textContent = 'Error loading page';
+                status.textContent = 'Error';
+                isLoading = false;
                 content.innerHTML = '<div style="display:flex;justify-content:center;align-items:center;height:100%;background:#0a0a0a;color:#fff;font-family:sans-serif;"><div style="text-align:center"><h2>Failed to load</h2><p>' + error.message + '</p></div></div>';
             }
         }
@@ -183,17 +154,11 @@
         });
         
         document.getElementById('backBtn').addEventListener('click', function() {
-            if (historyIndex > 0) {
-                historyIndex--;
-                loadPage(historyStack[historyIndex], false);
-            }
+            if (historyIndex > 0) { historyIndex--; loadPage(historyStack[historyIndex], false); }
         });
         
         document.getElementById('forwardBtn').addEventListener('click', function() {
-            if (historyIndex < historyStack.length - 1) {
-                historyIndex++;
-                loadPage(historyStack[historyIndex], false);
-            }
+            if (historyIndex < historyStack.length - 1) { historyIndex++; loadPage(historyStack[historyIndex], false); }
         });
         
         document.getElementById('refreshBtn').addEventListener('click', function() {
@@ -207,7 +172,6 @@
             }
         });
         
-        // Load initial URL
         const params = new URLSearchParams(window.location.search);
         if (params.get('url')) {
             urlInput.value = decodeURIComponent(params.get('url'));
