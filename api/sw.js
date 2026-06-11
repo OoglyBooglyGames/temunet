@@ -1,6 +1,3 @@
-// Service Worker - Intercepts ALL requests
-const PROXY_API = '/api/proxy?url=';
-
 self.addEventListener('install', (event) => {
     self.skipWaiting();
 });
@@ -12,23 +9,23 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
     const url = new URL(event.request.url);
     
-    // Intercept /proxy/* requests
+    // Intercept /proxy/* requests and rewrite them
     if (url.pathname.startsWith('/proxy/')) {
-        const targetUrl = decodeURIComponent(url.pathname.replace('/proxy/', ''));
+        const encodedUrl = url.pathname.replace('/proxy/', '');
+        const targetUrl = decodeURIComponent(encodedUrl);
         
-        // Reconstruct full URL with query string
-        const fullTargetUrl = targetUrl + (url.search || '');
+        // Keep any query parameters
+        const queryString = url.search || '';
+        const fullUrl = targetUrl + queryString;
         
-        console.log('SW Proxying:', fullTargetUrl);
+        console.log('SW proxying:', fullUrl);
         
-        // Fetch through our API
-        const proxyUrl = PROXY_API + encodeURIComponent(fullTargetUrl);
-        event.respondWith(fetch(proxyUrl, {
-            headers: event.request.headers
-        }));
+        // Fetch from our API
+        const apiUrl = '/api/proxy?url=' + encodeURIComponent(fullUrl);
+        event.respondWith(fetch(apiUrl));
         return;
     }
     
-    // Pass through all other requests
+    // Pass through everything else
     event.respondWith(fetch(event.request));
 });
