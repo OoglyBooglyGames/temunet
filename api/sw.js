@@ -3,14 +3,9 @@ self.addEventListener('activate', (e) => e.waitUntil(clients.claim()));
 
 self.addEventListener('fetch', (event) => {
     const url = new URL(event.request.url);
-    
-    // Don't intercept our own API calls
     if (url.pathname.startsWith('/api/proxy')) return;
-    
-    // Don't intercept main page or SW
     if (url.pathname === '/' || url.pathname === '/index.html' || url.pathname === '/sw.js') return;
     
-    // Intercept everything else and proxy it
     const targetPath = url.pathname + url.search;
     let host = 'www.youtube.com';
     
@@ -29,6 +24,5 @@ self.addEventListener('fetch', (event) => {
     }
     
     const fullUrl = 'https://' + host + targetPath;
-    const proxyUrl = '/api/proxy?url=' + encodeURIComponent(fullUrl);
-    event.respondWith(fetch(proxyUrl));
+    event.respondWith(fetch('/api/proxy?url=' + encodeURIComponent(fullUrl)));
 });
