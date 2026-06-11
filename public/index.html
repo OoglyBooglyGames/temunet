@@ -49,22 +49,19 @@
         let currentUrl = '';
         let isLoading = false;
         
-        // Handle navigation messages from injected page
         window.addEventListener('message', function(e) {
             if (!e.data || !e.data.type) return;
             
             if (e.data.type === 'NAVIGATE') {
-                // Page wants to navigate somewhere
-                if (!isLoading) {
-                    loadPage(e.data.url);
-                }
+                if (!isLoading) loadPage(e.data.url);
             } else if (e.data.type === 'URL_CHANGE') {
-                // Just update the URL bar
                 urlInput.value = e.data.url;
                 currentUrl = e.data.url;
                 try {
                     history.replaceState({ url: e.data.url, index: historyIndex }, '', '?url=' + encodeURIComponent(e.data.url));
                 } catch(ex) {}
+            } else if (e.data.type === 'RELOAD') {
+                if (!isLoading && currentUrl) loadPage(currentUrl, false);
             }
         });
         
@@ -80,14 +77,10 @@
             currentUrl = url;
             
             if (addToHistory) {
-                if (historyIndex < historyStack.length - 1) {
-                    historyStack = historyStack.slice(0, historyIndex + 1);
-                }
+                if (historyIndex < historyStack.length - 1) historyStack = historyStack.slice(0, historyIndex + 1);
                 historyStack.push(url);
                 historyIndex = historyStack.length - 1;
-                try {
-                    history.pushState({ url, index: historyIndex }, '', '?url=' + encodeURIComponent(url));
-                } catch(e) {}
+                try { history.pushState({ url, index: historyIndex }, '', '?url=' + encodeURIComponent(url)); } catch(e) {}
             }
             
             try {
@@ -115,9 +108,7 @@
                     for (const attr of oldScript.attributes) {
                         newScript.setAttribute(attr.name, attr.value);
                     }
-                    if (oldScript.textContent) {
-                        newScript.textContent = oldScript.textContent;
-                    }
+                    if (oldScript.textContent) newScript.textContent = oldScript.textContent;
                     content.appendChild(newScript);
                 }
                 
@@ -130,7 +121,6 @@
                 loading.style.display = 'none';
                 status.textContent = 'Error';
                 isLoading = false;
-                content.innerHTML = '<div style="display:flex;justify-content:center;align-items:center;height:100%;background:#0a0a0a;color:#fff;font-family:sans-serif;"><div style="text-align:center"><h2>Failed to load</h2><p>' + error.message + '</p></div></div>';
             }
         }
         
@@ -147,10 +137,7 @@
         urlInput.addEventListener('keypress', function(e) { if (e.key === 'Enter') navigate(); });
         
         document.querySelectorAll('.quickBtn').forEach(function(btn) {
-            btn.addEventListener('click', function() {
-                urlInput.value = this.dataset.url;
-                navigate();
-            });
+            btn.addEventListener('click', function() { urlInput.value = this.dataset.url; navigate(); });
         });
         
         document.getElementById('backBtn').addEventListener('click', function() {
@@ -166,17 +153,11 @@
         });
         
         window.addEventListener('popstate', function(e) {
-            if (e.state && e.state.url) {
-                urlInput.value = e.state.url;
-                loadPage(e.state.url, false);
-            }
+            if (e.state && e.state.url) { urlInput.value = e.state.url; loadPage(e.state.url, false); }
         });
         
         const params = new URLSearchParams(window.location.search);
-        if (params.get('url')) {
-            urlInput.value = decodeURIComponent(params.get('url'));
-            navigate();
-        }
+        if (params.get('url')) { urlInput.value = decodeURIComponent(params.get('url')); navigate(); }
     </script>
 </body>
 </html>
