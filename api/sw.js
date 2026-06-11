@@ -7,30 +7,28 @@ self.addEventListener('fetch', (event) => {
     // Don't intercept our own API calls
     if (url.pathname.startsWith('/api/proxy')) return;
     
-    // Don't intercept our main page or SW
-    if (url.pathname === '/' || url.pathname === '/index.html' || url.pathname === '/sw.js') {
-        return;
-    }
+    // Don't intercept main page or SW
+    if (url.pathname === '/' || url.pathname === '/index.html' || url.pathname === '/sw.js') return;
     
-    // Intercept EVERYTHING else and proxy it
-    // This includes YouTube API calls like /youtubei/v1/next
-    const targetUrl = url.pathname + url.search;
-    
-    // Determine the correct host
+    // Intercept everything else and proxy it
+    const targetPath = url.pathname + url.search;
     let host = 'www.youtube.com';
-    if (targetUrl.includes('google.com') || targetUrl.includes('/signin') || targetUrl.includes('/accounts')) {
+    
+    if (targetPath.includes('google.com') || targetPath.includes('/signin') || targetPath.includes('/accounts')) {
         host = 'accounts.google.com';
-    } else if (targetUrl.includes('googlevideo.com')) {
-        host = url.hostname; // keep original for video CDN
-    } else if (targetUrl.includes('gstatic.com')) {
+    } else if (targetPath.includes('googlevideo.com')) {
+        host = url.hostname;
+    } else if (targetPath.includes('gstatic.com')) {
         host = 'www.gstatic.com';
-    } else if (targetUrl.includes('ytimg.com')) {
+    } else if (targetPath.includes('ytimg.com')) {
         host = 'i.ytimg.com';
+    } else if (targetPath.includes('reddit.com') || targetPath.includes('redd.it')) {
+        host = 'www.reddit.com';
+    } else if (targetPath.includes('x.com') || targetPath.includes('twitter.com')) {
+        host = 'x.com';
     }
     
-    const fullUrl = 'https://' + host + targetUrl;
+    const fullUrl = 'https://' + host + targetPath;
     const proxyUrl = '/api/proxy?url=' + encodeURIComponent(fullUrl);
-    
-    console.log('SW proxying:', fullUrl);
     event.respondWith(fetch(proxyUrl));
 });
