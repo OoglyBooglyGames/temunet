@@ -60,10 +60,8 @@
         }
         
         button:hover { background: #2a2a2a; }
-        
         #goBtn { background: #ff0000; color: white; }
         #goBtn:hover { background: #cc0000; }
-        
         .quickBtn { padding: 8px 15px; font-size: 12px; }
         
         #frameContainer { flex: 1; position: relative; }
@@ -116,7 +114,7 @@
         <button class="navBtn" id="forwardBtn">→</button>
         <button class="navBtn" id="refreshBtn">↻</button>
         
-        <input type="text" id="urlInput" placeholder="Enter URL..." autocomplete="off" spellcheck="false">
+        <input type="text" id="urlInput" placeholder="Enter URL or search..." autocomplete="off" spellcheck="false">
         <button id="goBtn">Go</button>
         
         <button class="quickBtn" data-url="https://www.youtube.com">▶ YouTube</button>
@@ -129,7 +127,7 @@
     <div id="loadingBar"></div>
     
     <div id="frameContainer">
-        <iframe id="proxyFrame"></iframe>
+        <iframe id="proxyFrame" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads allow-presentation"></iframe>
     </div>
     
     <script>
@@ -138,14 +136,27 @@
         const loadingBar = document.getElementById('loadingBar');
         const status = document.getElementById('status');
         
-        let history = [];
+        let historyStack = [];
         let historyIndex = -1;
+        let isLoading = false;
+        
+        // LISTEN FOR MESSAGES FROM IFRAME
+        window.addEventListener('message', function(e) {
+            if (e.data.type === 'NAVIGATE') {
+                // Iframe wants to navigate
+                navigateTo(e.data.url);
+            } else if (e.data.type === 'URL_CHANGE') {
+                // URL changed inside iframe
+                updateUrlBar(e.data.url);
+            }
+        });
         
         function navigate() {
             let url = urlInput.value.trim();
             if (!url) return;
             
-            if (!url.startsWith('http')) {
+            // Handle search queries
+            if (!url.startsWith('http://') && !url.startsWith('https://')) {
                 if (url.includes(' ') || !url.includes('.')) {
                     url = 'https://www.google.com/search?q=' + encodeURIComponent(url);
                 } else {
@@ -153,76 +164,112 @@
                 }
             }
             
-            loadUrl(url);
+            navigateTo(url);
         }
         
-        function loadUrl(url) {
+        function navigateTo(url) {
+            if (isLoading) return;
+            isLoading = true;
+            
             loadingBar.style.display = 'block';
             status.textContent = 'Loading...';
+            
+            // Update URL bar
             urlInput.value = url;
             
             // Add to history
-            if (historyIndex < history.length - 1) {
-                history = history.slice(0, historyIndex + 1);
+            if (historyIndex < historyStack.length - 1) {
+                historyStack = historyStack.slice(0, historyIndex + 1);
             }
-            history.push(url);
-            historyIndex = history.length - 1;
+            historyStack.push(url);
+            historyIndex = historyStack.length - 1;
             
             // Load through proxy
-            iframe.src = '/api/proxy?url=' + encodeURIComponent(url);
+            const proxyUrl = '/api/proxy?url=' + encodeURIComponent(url);
+            iframe.src = proxyUrl;
             
             // Update browser URL
-            history.pushState({ url, index: historyIndex }, '', '?url=' + encodeURIComponent(url));
+            try {
+                history.pushState({ url, index: historyIndex }, '', '?url=' + encodeURIComponent(url));
+            } catch(e) {}
         }
         
-        iframe.onload = () => {
+        function updateUrlBar(url) {
+            if (url && url !== 'about:blank') {
+                urlInput.value = url;
+            }
+        }
+        
+        // Iframe load handler
+        iframe.addEventListener('load', function() {
             loadingBar.style.display = 'none';
             status.textContent = 'Loaded';
-        };
-        
-        document.getElementById('goBtn').onclick = navigate;
-        urlInput.onkeypress = (e) => { if (e.key === 'Enter') navigate(); };
-        
-        document.querySelectorAll('.quickBtn').forEach(btn => {
-            btn.onclick = () => {
-                urlInput.value = btn.dataset.url;
-                navigate();
-            };
+            isLoading = false;
         });
         
-        document.getElementById('backBtn').onclick = () => {
+        // Iframe error handler
+        iframe.addEventListener('error', function() {
+            loadingBar.style.display = 'none';
+            status.textContent = 'Error loading';
+            isLoading = false;
+        });
+        
+        // Button handlers
+        document.getElementById('goBtn').addEventListener('click', navigate);
+        
+        urlInput.addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') navigate();
+        });
+        
+        document.querySelectorAll('.quickBtn').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                urlInput.value = this.dataset.url;
+                navigate();
+            });
+        });
+        
+        document.getElementById('backBtn').addEventListener('click', function() {
             if (historyIndex > 0) {
                 historyIndex--;
-                loadUrl(history[historyIndex]);
-            }
-        };
-        
-        document.getElementById('forwardBtn').onclick = () => {
-            if (historyIndex < history.length - 1) {
-                historyIndex++;
-                loadUrl(history[historyIndex]);
-            }
-        };
-        
-        document.getElementById('refreshBtn').onclick = () => {
-            if (history[historyIndex]) {
-                loadUrl(history[historyIndex]);
-            }
-        };
-        
-        window.addEventListener('popstate', (e) => {
-            if (e.state && e.state.url) {
-                loadUrl(e.state.url);
+                const url = historyStack[historyIndex];
+                urlInput.value = url;
+                navigateTo(url);
             }
         });
         
-        // Load initial URL
-        const params = new URLSearchParams(window.location.search);
-        const initialUrl = params.get('url');
-        if (initialUrl) {
-            urlInput.value = decodeURIComponent(initialUrl);
-            navigate();
-        }
+        document.getElementById('forwardBtn').addEventListener('click', function() {
+            if (historyIndex < historyStack.length - 1) {
+                historyIndex++;
+                const url = historyStack[historyIndex];
+                urlInput.value = url;
+                navigateTo(url);
+            }
+        });
+        
+        document.getElementById('refreshBtn').addEventListener('click', function() {
+            if (historyStack[historyIndex]) {
+                navigateTo(historyStack[historyIndex]);
+            }
+        });
+        
+        // Browser back/forward
+        window.addEventListener('popstate', function(e) {
+            if (e.state && e.state.url) {
+                urlInput.value = e.state.url;
+                navigateTo(e.state.url);
+            }
+        });
+        
+        // Load initial URL from query parameter
+        (function() {
+            const params = new URLSearchParams(window.location.search);
+            const initialUrl = params.get('url');
+            if (initialUrl) {
+                const decoded = decodeURIComponent(initialUrl);
+                urlInput.value = decoded;
+                navigateTo(decoded);
+            }
+        })();
     </script>
 </body>
 </html>
