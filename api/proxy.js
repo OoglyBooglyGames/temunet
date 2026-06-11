@@ -73,80 +73,162 @@ export default async function handler(req, res) {
         if (ct.includes('text/html')) {
             let html = response.body.toString('utf8');
             
-            // INJECT THIS BEFORE ANYTHING ELSE - prevents reload loops
-            const navBlocker = `
+            // NUCLEAR NAVIGATION BLOCKER - injected BEFORE doctype
+            const nuclearBlocker = `
 <script>
 (function() {
-    // Store original functions
-    var _pushState = history.pushState;
-    var _replaceState = history.replaceState;
-    var _back = history.back;
-    var _forward = history.forward;
-    var _go = history.go;
+    // Freeze the current URL
+    var FROZEN_URL = '${targetUrl}';
+    var PROXY_PREFIX = '/api/proxy?url=';
     
-    // Override pushState to prevent navigation
+    // Completely replace window.location
+    var fakeLocation = {
+        _url: FROZEN_URL,
+        get href() { return PROXY_PREFIX + encodeURIComponent(this._url); },
+        set href(url) {
+            try {
+                var absolute = new URL(url, this._url).href;
+                if (absolute.startsWith('http')) {
+                    this._url = absolute;
+                    window.parent.postMessage({ type: 'NAVIGATE', url: absolute }, '*');
+                }
+            } catch(e) {}
+        },
+        get protocol() { try { return new URL(this._url).protocol; } catch(e) { return 'https:'; } },
+        get host() { try { return new URL(this._url).host; } catch(e) { return ''; } },
+        get hostname() { try { return new URL(this._url).hostname; } catch(e) { return ''; } },
+        get port() { try { return new URL(this._url).port; } catch(e) { return ''; } },
+        get pathname() { try { return new URL(this._url).pathname; } catch(e) { return ''; } },
+        get search() { try { return new URL(this._url).search; } catch(e) { return ''; } },
+        get hash() { try { return new URL(this._url).hash; } catch(e) { return ''; } },
+        get origin() { try { return new URL(this._url).origin; } catch(e) { return ''; } },
+        assign: function(url) { this.href = url; },
+        replace: function(url) { this.href = url; },
+        reload: function() { window.parent.postMessage({ type: 'RELOAD' }, '*'); },
+        toString: function() { return this.href; }
+    };
+    
+    // Force override location
+    try {
+        Object.defineProperty(window, 'location', {
+            get: function() { return fakeLocation; },
+            set: function(url) { fakeLocation.href = url; },
+            configurable: false,
+            enumerable: true
+        });
+        Object.defineProperty(document, 'location', {
+            get: function() { return fakeLocation; },
+            set: function(url) { fakeLocation.href = url; },
+            configurable: false,
+            enumerable: true
+        });
+    } catch(e) {
+        window.location = fakeLocation;
+        document.location = fakeLocation;
+    }
+    
+    // Override history API
+    var _pushState = history.pushState.bind(history);
+    var _replaceState = history.replaceState.bind(history);
+    
     history.pushState = function(state, title, url) {
         if (url) {
             try {
-                var absolute = new URL(url, '${targetUrl}').href;
-                if (absolute.startsWith('http') && !absolute.includes(window.location.host)) {
-                    // Send to parent to handle navigation
-                    window.parent.postMessage({ type: 'NAVIGATE', url: absolute }, '*');
-                    return;
-                }
-                // Update URL bar without reloading
-                url = '/api/proxy?url=' + encodeURIComponent(absolute);
+                var absolute = new URL(url, fakeLocation._url).href;
+                fakeLocation._url = absolute;
+                url = PROXY_PREFIX + encodeURIComponent(absolute);
                 window.parent.postMessage({ type: 'URL_CHANGE', url: absolute }, '*');
             } catch(e) {}
         }
-        return _pushState.call(this, state, title, url);
+        return _pushState(state, title, url);
     };
     
     history.replaceState = function(state, title, url) {
         if (url) {
             try {
-                var absolute = new URL(url, '${targetUrl}').href;
-                if (absolute.startsWith('http') && !absolute.includes(window.location.host)) {
-                    window.parent.postMessage({ type: 'NAVIGATE', url: absolute }, '*');
-                    return;
-                }
-                url = '/api/proxy?url=' + encodeURIComponent(absolute);
+                var absolute = new URL(url, fakeLocation._url).href;
+                fakeLocation._url = absolute;
+                url = PROXY_PREFIX + encodeURIComponent(absolute);
                 window.parent.postMessage({ type: 'URL_CHANGE', url: absolute }, '*');
             } catch(e) {}
         }
-        return _replaceState.call(this, state, title, url);
+        return _replaceState(state, title, url);
     };
     
-    // Override location changes
-    var origLocation = window.location;
-    try {
-        Object.defineProperty(window, 'location', {
-            get: function() { return origLocation; },
-            set: function(url) {
-                try {
-                    var absolute = new URL(url, '${targetUrl}').href;
-                    if (absolute.startsWith('http') && !absolute.includes(window.location.host)) {
-                        window.parent.postMessage({ type: 'NAVIGATE', url: absolute }, '*');
-                    }
-                } catch(e) {}
-            },
-            configurable: true
-        });
-    } catch(e) {}
+    // Block window.open
+    window.open = function(url, target, features) {
+        if (url) {
+            try {
+                var absolute = new URL(url, fakeLocation._url).href;
+                window.parent.postMessage({ type: 'NAVIGATE', url: absolute }, '*');
+            } catch(e) {}
+        }
+        return { closed: false, close: function(){}, focus: function(){} };
+    };
     
-    console.log('Navigation blocker active');
+    // Catch all link clicks
+    document.addEventListener('click', function(e) {
+        var target = e.target;
+        while (target && target !== document.documentElement) {
+            if ((target.tagName === 'A' || target.tagName === 'AREA') && target.href) {
+                var href = target.getAttribute('href');
+                if (href && href !== '#' && !href.startsWith('javascript:') && !href.startsWith('data:')) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    e.stopImmediatePropagation();
+                    try {
+                        var absolute = new URL(href, fakeLocation._url).href;
+                        window.parent.postMessage({ type: 'NAVIGATE', url: absolute }, '*');
+                    } catch(ex) {}
+                    return false;
+                }
+            }
+            target = target.parentElement;
+        }
+    }, true);
+    
+    // Catch form submissions
+    document.addEventListener('submit', function(e) {
+        var form = e.target;
+        if (form.action && !form.action.startsWith('javascript:')) {
+            e.preventDefault();
+            e.stopPropagation();
+            try {
+                var action = form.action;
+                if (form.method && form.method.toLowerCase() === 'get') {
+                    var fd = new FormData(form);
+                    var params = new URLSearchParams(fd).toString();
+                    if (params) action += (action.includes('?') ? '&' : '?') + params;
+                }
+                var absolute = new URL(action, fakeLocation._url).href;
+                window.parent.postMessage({ type: 'NAVIGATE', url: absolute }, '*');
+            } catch(ex) {}
+            return false;
+        }
+    }, true);
+    
+    // Block beforeunload
+    window.addEventListener('beforeunload', function(e) {
+        e.preventDefault();
+        e.returnValue = '';
+        return '';
+    });
+    
+    console.log('🔥 NUCLEAR NAVIGATION BLOCKER ACTIVE');
 })();
 </script>
+<!DOCTYPE html>
 `;
             
-            // Inject BEFORE YouTube's scripts
-            html = html.replace(/<head[^>]*>/i, '<head>' + navBlocker);
+            // Replace the doctype with our blocker + doctype
+            html = html.replace(/<!DOCTYPE[^>]*>/i, nuclearBlocker);
             
+            // Add base tag
             if (!html.includes('<base ')) {
                 html = html.replace(/<head[^>]*>/i, '$&<base href="' + targetUrl + '">');
             }
             
-            // Rewrite URLs
+            // Rewrite ALL URLs to go through proxy
             html = html.replace(/(src|href|action|data)=["']((?:https?:)?\/\/)([^"']+)["']/gi, (m,a,p,r) => { 
                 const f = (p.startsWith('http')?'':'https:')+p+r; 
                 return a+'="/api/proxy?url='+encodeURIComponent(f)+'"'; 
