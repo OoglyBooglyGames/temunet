@@ -15,12 +15,12 @@
         #goBtn{background:#f00}
         #goBtn:hover{background:#c00}
         .quickBtn{padding:8px 15px;font-size:12px}
-        #frameContainer{flex:1;position:relative}
-        #proxyFrame{width:100%;height:100%;border:none;background:#fff}
+        #content{flex:1;position:relative;background:#fff;overflow:auto}
         #loading{position:fixed;top:0;left:0;height:3px;background:#f00;display:none;z-index:10001;width:100%;animation:pulse 1s infinite}
         @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.3}}
         .navBtn{padding:8px 10px;min-width:35px;border-radius:50%;font-size:16px}
         #status{color:#666;font-size:11px;margin-left:auto}
+        #proxyContent{width:100%;height:100%;border:none}
     </style>
 </head>
 <body>
@@ -28,26 +28,31 @@
         <button class="navBtn" id="backBtn">←</button>
         <button class="navBtn" id="forwardBtn">→</button>
         <button class="navBtn" id="refreshBtn">↻</button>
-        <input type="text" id="urlInput" placeholder="Enter URL..." autocomplete="off" spellcheck="false">
+        <input type="text" id="urlInput" placeholder="Enter URL or search..." autocomplete="off" spellcheck="false">
         <button id="goBtn">Go</button>
         <button class="quickBtn" data-url="https://www.youtube.com">▶ YouTube</button>
         <button class="quickBtn" data-url="https://www.reddit.com">Reddit</button>
         <button class="quickBtn" data-url="https://x.com">𝕏 X</button>
+        <button class="quickBtn" data-url="https://www.google.com">Google</button>
         <span id="status">Ready</span>
     </div>
     <div id="loading"></div>
-    <div id="frameContainer">
-        <iframe id="proxyFrame" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads allow-presentation allow-top-navigation-by-user-activation"></iframe>
+    <div id="content">
+        <div id="proxyContent"></div>
     </div>
     
     <script>
-        const iframe = document.getElementById('proxyFrame');
+        const proxyContent = document.getElementById('proxyContent');
         const urlInput = document.getElementById('urlInput');
         const loading = document.getElementById('loading');
         const status = document.getElementById('status');
-        let historyStack = [], historyIndex = -1;
+        let historyStack = [];
+        let historyIndex = -1;
         
-        function navigateTo(url, addToHistory = true) {
+        // THE REAL FIX: Load page content directly into the page
+        // No iframe - the page BECOMES the proxied site
+        
+        async function loadPage(url, addToHistory = true) {
             loading.style.display = 'block';
             status.textContent = 'Loading...';
             urlInput.value = url;
@@ -58,51 +63,94 @@
                 }
                 historyStack.push(url);
                 historyIndex = historyStack.length - 1;
+                try {
+                    history.pushState({ url, index: historyIndex }, '', '?url=' + encodeURIComponent(url));
+                } catch(e) {}
             }
             
-            iframe.src = '/api/proxy?url=' + encodeURIComponent(url);
             try {
-                history.pushState({ url, index: historyIndex }, '', '?url=' + encodeURIComponent(url));
-            } catch(e) {}
+                // Fetch through our proxy API
+                const response = await fetch('/api/proxy?url=' + encodeURIComponent(url));
+                const html = await response.text();
+                
+                // Inject the HTML directly into the page
+                // This makes the browser think it's actually on the target site
+                proxyContent.innerHTML = html;
+                
+                // Execute scripts manually
+                const scripts = proxyContent.querySelectorAll('script');
+                scripts.forEach(oldScript => {
+                    const newScript = document.createElement('script');
+                    
+                    // Copy all attributes
+                    Array.from(oldScript.attributes).forEach(attr => {
+                        newScript.setAttribute(attr.name, attr.value);
+                    });
+                    
+                    // Copy inline code
+                    newScript.textContent = oldScript.textContent;
+                    
+                    // Replace old script with new one (this executes it)
+                    oldScript.parentNode.replaceChild(newScript, oldScript);
+                });
+                
+                loading.style.display = 'none';
+                status.textContent = 'Loaded';
+                
+            } catch (error) {
+                console.error('Failed to load:', error);
+                loading.style.display = 'none';
+                status.textContent = 'Error loading';
+                
+                // Fallback: use iframe inside the content div
+                const iframe = document.createElement('iframe');
+                iframe.style.cssText = 'width:100%;height:100%;border:none;';
+                iframe.src = '/api/proxy?url=' + encodeURIComponent(url);
+                proxyContent.innerHTML = '';
+                proxyContent.appendChild(iframe);
+            }
         }
         
         function navigate() {
             let url = urlInput.value.trim();
             if (!url) return;
             if (!url.startsWith('http')) {
-                url = url.includes('.') && !url.includes(' ') ? 'https://' + url : 'https://www.google.com/search?q=' + encodeURIComponent(url);
+                url = url.includes('.') && !url.includes(' ') ? 
+                    'https://' + url : 
+                    'https://www.google.com/search?q=' + encodeURIComponent(url);
             }
-            navigateTo(url);
+            loadPage(url);
         }
         
-        // Listen for messages from iframe
+        // Handle all navigation events
         window.addEventListener('message', function(e) {
             if (!e.data || !e.data.type) return;
-            
             if (e.data.type === 'NAVIGATE') {
-                navigateTo(e.data.url);
+                loadPage(e.data.url);
             } else if (e.data.type === 'URL_CHANGE') {
                 urlInput.value = e.data.url;
-                // Update history silently
                 try {
                     history.replaceState({ url: e.data.url, index: historyIndex }, '', '?url=' + encodeURIComponent(e.data.url));
                 } catch(e) {}
-            } else if (e.data.type === 'RELOAD') {
-                if (historyStack[historyIndex]) {
-                    navigateTo(historyStack[historyIndex], false);
-                }
             }
         });
         
-        iframe.addEventListener('load', () => {
-            loading.style.display = 'none';
-            status.textContent = 'Loaded';
+        // Intercept ALL navigation attempts on the main window
+        window.addEventListener('beforeunload', function(e) {
+            e.preventDefault();
+            e.returnValue = '';
+            return '';
         });
         
-        iframe.addEventListener('error', () => {
-            loading.style.display = 'none';
-            status.textContent = 'Error';
-        });
+        // Override navigation on main window
+        const originalOpen = window.open;
+        window.open = function(url, target, features) {
+            if (url) {
+                loadPage(url.toString());
+                return { closed: false, close: function(){}, focus: function(){} };
+            }
+            return originalOpen.apply(this, arguments);
+        };
         
         document.getElementById('goBtn').addEventListener('click', navigate);
         urlInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') navigate(); });
@@ -117,31 +165,58 @@
         document.getElementById('backBtn').addEventListener('click', () => {
             if (historyIndex > 0) {
                 historyIndex--;
-                navigateTo(historyStack[historyIndex], false);
+                loadPage(historyStack[historyIndex], false);
             }
         });
         
         document.getElementById('forwardBtn').addEventListener('click', () => {
             if (historyIndex < historyStack.length - 1) {
                 historyIndex++;
-                navigateTo(historyStack[historyIndex], false);
+                loadPage(historyStack[historyIndex], false);
             }
         });
         
         document.getElementById('refreshBtn').addEventListener('click', () => {
             if (historyStack[historyIndex]) {
-                navigateTo(historyStack[historyIndex], false);
+                loadPage(historyStack[historyIndex], false);
             }
         });
         
         window.addEventListener('popstate', (e) => {
             if (e.state && e.state.url) {
                 urlInput.value = e.state.url;
-                navigateTo(e.state.url, false);
+                loadPage(e.state.url, false);
             }
         });
         
-        // Initial load
+        // Handle clicks on proxied content
+        proxyContent.addEventListener('click', function(e) {
+            let target = e.target;
+            while (target && target !== proxyContent) {
+                if (target.tagName === 'A' && target.href && !target.href.startsWith('javascript:') && !target.href.startsWith('#')) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    
+                    let href = target.getAttribute('href');
+                    // Check if it's already a proxy URL
+                    if (href.startsWith('/api/proxy?url=')) {
+                        const match = href.match(/url=([^&]+)/);
+                        if (match) {
+                            loadPage(decodeURIComponent(match[1]));
+                        }
+                    } else {
+                        // Resolve relative URLs
+                        const currentUrl = historyStack[historyIndex] || 'https://www.google.com';
+                        const absolute = new URL(href, currentUrl).href;
+                        loadPage(absolute);
+                    }
+                    return false;
+                }
+                target = target.parentElement;
+            }
+        });
+        
+        // Load initial URL
         const params = new URLSearchParams(window.location.search);
         if (params.get('url')) {
             urlInput.value = decodeURIComponent(params.get('url'));
