@@ -20,12 +20,8 @@
       "dest": "/public/index.html"
     },
     {
-      "src": "/proxy/(.*)",
-      "dest": "/api/proxy.js?url=$1"
-    },
-    {
       "src": "/(.*)",
-      "dest": "/api/proxy.js?url=$1"
+      "dest": "/public/$1"
     }
   ]
 }
