@@ -8,14 +8,6 @@
     { "src": "/api/proxy", "dest": "/api/proxy.js" },
     { "src": "/sw.js", "dest": "/public/sw.js" },
     { "src": "/", "dest": "/public/index.html" },
-    { "src": "/proxy/(.*)", "dest": "/api/proxy.js?url=$1" },
-    { "src": "/results(.*)", "dest": "/api/proxy.js?path=www.youtube.com/results$1" },
-    { "src": "/search(.*)", "dest": "/api/proxy.js?path=www.google.com/search$1" },
-    { "src": "/watch(.*)", "dest": "/api/proxy.js?path=www.youtube.com/watch$1" },
-    { "src": "/youtubei/(.*)", "dest": "/api/proxy.js?path=www.youtube.com/youtubei/$1" },
-    { "src": "/s/(.*)", "dest": "/api/proxy.js?path=www.youtube.com/s/$1" },
-    { "src": "/@(.*)", "dest": "/api/proxy.js?path=www.youtube.com/@$1" },
-    { "src": "/signin(.*)", "dest": "/api/proxy.js?path=accounts.google.com/signin$1" },
     { "src": "/(.*)", "dest": "/api/proxy.js?catchall=$1" }
   ]
 }
