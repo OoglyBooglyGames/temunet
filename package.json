@@ -1,0 +1,13 @@
+{
+  "name": "vercel-web-proxy",
+  "version": "1.0.0",
+  "description": "Ultimate web proxy for Vercel",
+  "scripts": {
+    "dev": "vercel dev",
+    "deploy": "vercel --prod"
+  },
+  "dependencies": {
+    "node-fetch": "^2.7.0",
+    "cheerio": "^1.0.0-rc.12"
+  }
+}
