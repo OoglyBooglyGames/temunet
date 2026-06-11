@@ -61,11 +61,7 @@
         
         button:hover { background: #2a2a2a; }
         
-        #goBtn {
-            background: #ff0000;
-            color: white;
-        }
-        
+        #goBtn { background: #ff0000; color: white; }
         #goBtn:hover { background: #cc0000; }
         
         .quickBtn { padding: 8px 15px; font-size: 12px; }
@@ -110,38 +106,22 @@
             justify-content: center;
         }
         
-        .navBtn:hover {
-            background: #2a2a2a;
-            border-color: #ff0000;
-        }
-        
-        #status {
-            color: #666;
-            font-size: 11px;
-            margin-left: auto;
-        }
-        
-        @media (max-width: 768px) {
-            #toolbar { padding: 8px; gap: 4px; }
-            button { padding: 8px 12px; font-size: 11px; }
-            .quickBtn { padding: 6px 10px; font-size: 10px; }
-        }
+        .navBtn:hover { background: #2a2a2a; border-color: #ff0000; }
+        #status { color: #666; font-size: 11px; margin-left: auto; }
     </style>
 </head>
 <body>
     <div id="toolbar">
-        <button class="navBtn" id="backBtn" title="Back">←</button>
-        <button class="navBtn" id="forwardBtn" title="Forward">→</button>
-        <button class="navBtn" id="refreshBtn" title="Refresh">↻</button>
-        <button class="navBtn" id="homeBtn" title="Home">⌂</button>
+        <button class="navBtn" id="backBtn">←</button>
+        <button class="navBtn" id="forwardBtn">→</button>
+        <button class="navBtn" id="refreshBtn">↻</button>
         
-        <input type="text" id="urlInput" placeholder="Enter URL or search..." autocomplete="off" spellcheck="false">
+        <input type="text" id="urlInput" placeholder="Enter URL..." autocomplete="off" spellcheck="false">
         <button id="goBtn">Go</button>
         
         <button class="quickBtn" data-url="https://www.youtube.com">▶ YouTube</button>
         <button class="quickBtn" data-url="https://www.reddit.com">Reddit</button>
-        <button class="quickBtn" data-url="https://x.com">𝕏 Twitter</button>
-        <button class="quickBtn" data-url="https://www.google.com">Google</button>
+        <button class="quickBtn" data-url="https://x.com">𝕏 X</button>
         
         <span id="status">Ready</span>
     </div>
@@ -149,145 +129,100 @@
     <div id="loadingBar"></div>
     
     <div id="frameContainer">
-        <iframe id="proxyFrame" 
-                sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads allow-presentation allow-orientation-lock allow-pointer-lock allow-popups-to-escape-sandbox allow-top-navigation-by-user-activation">
-        </iframe>
+        <iframe id="proxyFrame"></iframe>
     </div>
     
     <script>
-        class ProxyController {
-            constructor() {
-                this.iframe = document.getElementById('proxyFrame');
-                this.urlInput = document.getElementById('urlInput');
-                this.loadingBar = document.getElementById('loadingBar');
-                this.status = document.getElementById('status');
-                this.history = [];
-                this.historyIndex = -1;
-                this.currentUrl = '';
-                
-                this.init();
-            }
+        const iframe = document.getElementById('proxyFrame');
+        const urlInput = document.getElementById('urlInput');
+        const loadingBar = document.getElementById('loadingBar');
+        const status = document.getElementById('status');
+        
+        let history = [];
+        let historyIndex = -1;
+        
+        function navigate() {
+            let url = urlInput.value.trim();
+            if (!url) return;
             
-            init() {
-                document.getElementById('goBtn').onclick = () => this.navigate();
-                this.urlInput.onkeypress = (e) => { if (e.key === 'Enter') this.navigate(); };
-                
-                document.querySelectorAll('.quickBtn').forEach(btn => {
-                    btn.onclick = () => {
-                        this.urlInput.value = btn.dataset.url;
-                        this.navigate();
-                    };
-                });
-                
-                document.getElementById('backBtn').onclick = () => this.goBack();
-                document.getElementById('forwardBtn').onclick = () => this.goForward();
-                document.getElementById('refreshBtn').onclick = () => this.refresh();
-                document.getElementById('homeBtn').onclick = () => this.goHome();
-                
-                this.iframe.onload = () => {
-                    this.loadingBar.style.display = 'none';
-                    this.status.textContent = 'Loaded';
-                    this.updateUrlFromIframe();
-                };
-                
-                // Handle browser back/forward
-                window.addEventListener('popstate', (e) => {
-                    if (e.state && e.state.url) {
-                        this.loadUrl(e.state.url, false);
-                    }
-                });
-                
-                // Load initial URL if provided
-                const urlParams = new URLSearchParams(window.location.search);
-                const initialUrl = urlParams.get('url');
-                if (initialUrl) {
-                    this.urlInput.value = decodeURIComponent(initialUrl);
-                    this.navigate();
+            if (!url.startsWith('http')) {
+                if (url.includes(' ') || !url.includes('.')) {
+                    url = 'https://www.google.com/search?q=' + encodeURIComponent(url);
+                } else {
+                    url = 'https://' + url;
                 }
             }
             
-            navigate() {
-                let url = this.urlInput.value.trim();
-                if (!url) return;
-                
-                if (!url.startsWith('http://') && !url.startsWith('https://')) {
-                    if (url.includes(' ') || !url.includes('.')) {
-                        url = 'https://www.google.com/search?q=' + encodeURIComponent(url);
-                    } else {
-                        url = 'https://' + url;
-                    }
-                }
-                
-                this.loadUrl(url, true);
-            }
-            
-            loadUrl(url, addToHistory) {
-                this.loadingBar.style.display = 'block';
-                this.status.textContent = 'Loading...';
-                this.currentUrl = url;
-                this.urlInput.value = url;
-                
-                if (addToHistory) {
-                    if (this.historyIndex < this.history.length - 1) {
-                        this.history = this.history.slice(0, this.historyIndex + 1);
-                    }
-                    this.history.push(url);
-                    this.historyIndex = this.history.length - 1;
-                }
-                
-                const proxyUrl = `/proxy?url=${encodeURIComponent(url)}`;
-                this.iframe.src = proxyUrl;
-                
-                // Update browser URL
-                history.pushState({ url: url }, '', `?url=${encodeURIComponent(url)}`);
-            }
-            
-            updateUrlFromIframe() {
-                try {
-                    const iframeUrl = this.iframe.contentWindow.location.href;
-                    if (iframeUrl.includes('?url=')) {
-                        const urlParam = new URL(iframeUrl).searchParams.get('url');
-                        if (urlParam) {
-                            const decodedUrl = decodeURIComponent(urlParam);
-                            this.urlInput.value = decodedUrl;
-                            this.currentUrl = decodedUrl;
-                        }
-                    }
-                } catch(e) {}
-            }
-            
-            goBack() {
-                if (this.historyIndex > 0) {
-                    this.historyIndex--;
-                    this.loadUrl(this.history[this.historyIndex], false);
-                }
-            }
-            
-            goForward() {
-                if (this.historyIndex < this.history.length - 1) {
-                    this.historyIndex++;
-                    this.loadUrl(this.history[this.historyIndex], false);
-                }
-            }
-            
-            refresh() {
-                if (this.currentUrl) {
-                    this.loadUrl(this.currentUrl, false);
-                }
-            }
-            
-            goHome() {
-                this.iframe.src = 'about:blank';
-                this.urlInput.value = '';
-                this.currentUrl = '';
-                this.history = [];
-                this.historyIndex = -1;
-                this.status.textContent = 'Ready';
-                history.pushState({}, '', '/');
-            }
+            loadUrl(url);
         }
         
-        const controller = new ProxyController();
+        function loadUrl(url) {
+            loadingBar.style.display = 'block';
+            status.textContent = 'Loading...';
+            urlInput.value = url;
+            
+            // Add to history
+            if (historyIndex < history.length - 1) {
+                history = history.slice(0, historyIndex + 1);
+            }
+            history.push(url);
+            historyIndex = history.length - 1;
+            
+            // Load through proxy
+            iframe.src = '/api/proxy?url=' + encodeURIComponent(url);
+            
+            // Update browser URL
+            history.pushState({ url, index: historyIndex }, '', '?url=' + encodeURIComponent(url));
+        }
+        
+        iframe.onload = () => {
+            loadingBar.style.display = 'none';
+            status.textContent = 'Loaded';
+        };
+        
+        document.getElementById('goBtn').onclick = navigate;
+        urlInput.onkeypress = (e) => { if (e.key === 'Enter') navigate(); };
+        
+        document.querySelectorAll('.quickBtn').forEach(btn => {
+            btn.onclick = () => {
+                urlInput.value = btn.dataset.url;
+                navigate();
+            };
+        });
+        
+        document.getElementById('backBtn').onclick = () => {
+            if (historyIndex > 0) {
+                historyIndex--;
+                loadUrl(history[historyIndex]);
+            }
+        };
+        
+        document.getElementById('forwardBtn').onclick = () => {
+            if (historyIndex < history.length - 1) {
+                historyIndex++;
+                loadUrl(history[historyIndex]);
+            }
+        };
+        
+        document.getElementById('refreshBtn').onclick = () => {
+            if (history[historyIndex]) {
+                loadUrl(history[historyIndex]);
+            }
+        };
+        
+        window.addEventListener('popstate', (e) => {
+            if (e.state && e.state.url) {
+                loadUrl(e.state.url);
+            }
+        });
+        
+        // Load initial URL
+        const params = new URLSearchParams(window.location.search);
+        const initialUrl = params.get('url');
+        if (initialUrl) {
+            urlInput.value = decodeURIComponent(initialUrl);
+            navigate();
+        }
     </script>
 </body>
 </html>
