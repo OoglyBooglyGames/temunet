@@ -11,14 +11,6 @@ export default async function handler(req, res) {
     
     if (req.query.url) {
         targetUrl = decodeURIComponent(req.query.url);
-    } else if (req.query.path) {
-        targetUrl = 'https://' + req.query.path;
-        const qKeys = Object.keys(req.query).filter(k => k !== 'path');
-        if (qKeys.length > 0) {
-            const p = new URLSearchParams();
-            qKeys.forEach(k => p.append(k, req.query[k]));
-            targetUrl += '?' + p.toString();
-        }
     } else if (req.query.catchall) {
         const referer = req.headers.referer || '';
         let host = 'www.youtube.com';
