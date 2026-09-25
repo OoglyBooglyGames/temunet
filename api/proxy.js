@@ -1,9 +1,100 @@
 const cheerio = require('cheerio');
+const acorn = require('acorn');
+const walk = require('acorn-walk');
+const MagicStringModule = require('magic-string');
+const MagicString = MagicStringModule.default || MagicStringModule;
+
+// ---------- BYPASS WHITELIST ----------
+const BYPASS_HOSTS = [
+  'google-analytics.com',
+  'googletagmanager.com',
+  'statsig.com',
+  'sentry.io',
+  'sentry-cdn.com',
+  'segment.io',
+  'segment.com',
+  'amplitude.com',
+  'mixpanel.com',
+  'hotjar.com',
+  'fullstory.com',
+  'clarity.ms',
+  'doubleclick.net',
+  'facebook.net',
+  'intercom.io',
+  'intercomcdn.com',
+  'posthog.com',
+  'plausible.io',
+  'datadoghq.com',
+  // Anthropic's asset CDN — huge vendor bundles get corrupted by rewriting
+  'assets-proxy.anthropic.com',
+];
+
+const BYPASS_PATH_PATTERNS = [
+  /\/ces\/v1\//,
+  /\/rgstr\b/,
+  /\/statsc\//,
+  /\/statsig\//,
+  /\/flush\b/,
+  // Anthropic's claude-ai asset tree
+  /^\/claude-ai\/v2\/assets\//,
+];
+
+// ---------- EXPLICIT URL BYPASS ----------
+// Exact substring matches that should NEVER be proxied.
+const BYPASS_URL_SUBSTRINGS = [
+  'assets-proxy.anthropic.com/claude-ai/v2/assets/v1/vendor-all-0-UFkBfsaM.js',
+  'vendor-all-0-UFkBfsaM.js',
+];
+
+function shouldBypass(url) {
+  if (typeof url !== 'string' || !url) return false;
+
+  // Fast path — exact substring match
+  for (const sub of BYPASS_URL_SUBSTRINGS) {
+    if (url.includes(sub)) return true;
+  }
+
+  try {
+    const u = new URL(url);
+    const host = u.hostname;
+    for (const h of BYPASS_HOSTS) {
+      if (host === h || host.endsWith('.' + h)) return true;
+    }
+    for (const p of BYPASS_PATH_PATTERNS) {
+      if (p.test(u.pathname)) return true;
+    }
+  } catch {}
+  return false;
+}
+
+// ---------- JS REWRITE SKIP LIST ----------
+const REWRITE_SKIP_PATTERNS = [
+  '/vendor-',
+  'vendor.',
+  '/shared-',
+  '/chunk-',
+  'rolldown',
+  'preload-helper',
+  'runtime-',
+  'bundle.',
+  '.bundle.',
+  '/polyfills',
+  'regenerator-runtime',
+];
+
+function shouldSkipRewrite(targetUrl, js) {
+  const lower = targetUrl.toLowerCase();
+  for (const p of REWRITE_SKIP_PATTERNS) {
+    if (lower.includes(p)) return true;
+  }
+  if (js.length > 200_000) return true;
+  if (js.split('\n').length < 5 && js.length > 50_000) return true;
+  return false;
+}
 
 module.exports = async function handler(req, res) {
   let targetUrl = req.query.url;
 
-  // Sometimes Vercel passes "/https://..." — strip the leading slash
   if (targetUrl && targetUrl.startsWith('/')) {
     targetUrl = targetUrl.slice(1);
   }
@@ -12,7 +103,16 @@ module.exports = async function handler(req, res) {
     return res.status(400).send('Missing url');
   }
 
-  // Validate it's a real URL
+  // If the URL is on the bypass list, tell the client to fetch it directly.
+  // We can't serve it, because the whole point is that it should never have
+  // been routed here in the first place. Return the target URL so the browser
+  // retries it directly.
+  if (shouldBypass(targetUrl)) {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('X-Bypass', '1');
+    return res.redirect(302, targetUrl);
+  }
+
   let urlObj;
   try {
     urlObj = new URL(targetUrl);
@@ -22,7 +122,6 @@ module.exports = async function handler(req, res) {
 
   const ext = (urlObj.pathname.split('.').pop() || '').toLowerCase();
 
-  // Pick Accept header based on file type
   let accept;
   if (['js', 'mjs', 'cjs'].includes(ext)) {
     accept = 'application/javascript,text/javascript,*/*;q=0.1';
@@ -65,8 +164,33 @@ module.exports = async function handler(req, res) {
       return res.send(css);
     }
 
+    // ---------- JavaScript ----------
+    if (['js', 'mjs', 'cjs'].includes(ext) ||
+        contentType.includes('javascript') ||
+        contentType.includes('ecmascript')) {
+
+      const js = await upstream.text();
+      let rewritten = js;
+
+      if (shouldSkipRewrite(targetUrl, js)) {
+        console.log('Skipping rewrite:', targetUrl);
+      } else {
+        try {
+          rewritten = rewriteJS(js, targetUrl);
+        } catch (e) {
+          console.error('rewriteJS failed:', e.message, '—', targetUrl);
+          rewritten = js;
+        }
+      }
+
+      res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Cache-Control', 'public, max-age=300');
+      return res.send(rewritten);
+    }
+
     // ---------- HTML ----------
-    if (contentType.includes('text/html') && !['js', 'mjs', 'cjs'].includes(ext)) {
+    if (contentType.includes('text/html')) {
       let html = await upstream.text();
       html = rewriteHTML(html, targetUrl);
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
@@ -75,20 +199,12 @@ module.exports = async function handler(req, res) {
       return res.send(html);
     }
 
-    // ---------- Everything else (JS, images, fonts) ----------
+    // ---------- Everything else ----------
     const buffer = Buffer.from(await upstream.arrayBuffer());
 
-    // Force correct MIME based on extension, even if upstream lies
     let forcedType = contentType;
-    if (['js', 'mjs', 'cjs'].includes(ext)) {
-      forcedType = 'application/javascript; charset=utf-8';
-    } else if (ext === 'css') {
-      forcedType = 'text/css; charset=utf-8';
-    } else if (ext === 'json') {
-      forcedType = 'application/json; charset=utf-8';
-    } else if (ext === 'svg') {
-      forcedType = 'image/svg+xml';
-    }
+    if (ext === 'json') forcedType = 'application/json; charset=utf-8';
+    else if (ext === 'svg') forcedType = 'image/svg+xml';
 
     res.setHeader('Content-Type', forcedType);
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -106,9 +222,122 @@ module.exports = async function handler(req, res) {
 function proxify(rawUrl, baseUrl) {
   try {
     const abs = new URL(rawUrl, baseUrl).href;
+    if (shouldBypass(abs)) return abs;
     return '/proxy/' + abs;
   } catch {
     return rawUrl;
+  }
+}
+
+function rewriteJS(js, baseUrl) {
+  if (js.length > 200_000) return js;
+
+  let ast;
+  try {
+    ast = acorn.parse(js, {
+      ecmaVersion: 'latest',
+      sourceType: 'module',
+      allowReturnOutsideFunction: true,
+      allowAwaitOutsideFunction: true,
+      allowImportExportEverywhere: true,
+    });
+  } catch {
+    return js;
+  }
+
+  const magic = new MagicString(js);
+
+  function shouldRewrite(s) {
+    if (typeof s !== 'string' || !s) return false;
+    if (/^(data|blob|javascript|mailto|tel|about|chrome|chrome-extension):/i.test(s)) return false;
+    if (s.startsWith('#')) return false;
+    if (s.startsWith('/proxy/')) return false;
+    if (s.startsWith('/')) return true;
+    if (s.startsWith('http://') || s.startsWith('https://') || s.startsWith('//')) return true;
+    return false;
+  }
+
+  function rewrite(raw) {
+    try {
+      const abs = new URL(raw, baseUrl).href;
+      if (shouldBypass(abs)) return raw;
+      return '/proxy/' + abs;
+    } catch {
+      return raw;
+    }
+  }
+
+  function rewriteArg(arg) {
+    if (!arg) return;
+    if (arg.type === 'Literal' && typeof arg.value === 'string') {
+      if (!shouldRewrite(arg.value)) return;
+      try {
+        magic.overwrite(arg.start, arg.end, JSON.stringify(rewrite(arg.value)));
+      } catch {}
+    } else if (arg.type === 'TemplateLiteral' && arg.expressions.length === 0 && arg.quasis.length === 1) {
+      const v = arg.quasis[0].value.cooked;
+      if (!shouldRewrite(v)) return;
+      try {
+        magic.overwrite(arg.start, arg.end, JSON.stringify(rewrite(v)));
+      } catch {}
+    }
+  }
+
+  const URL_FIRST_ARG = new Set([
+    'fetch', 'open', 'sendBeacon', 'importScripts',
+    'get', 'post', 'put', 'delete', 'head', 'options', 'patch',
+    'request', 'query', 'mutate',
+  ]);
+
+  const URL_CONSTRUCTORS = new Set([
+    'WebSocket', 'Worker', 'SharedWorker', 'EventSource',
+    'Image', 'Audio',
+  ]);
+
+  try {
+    walk.simple(ast, {
+      CallExpression(node) {
+        const callee = node.callee;
+        let name = null;
+
+        if (callee.type === 'Identifier') {
+          name = callee.name;
+        } else if (callee.type === 'MemberExpression' && callee.property.type === 'Identifier') {
+          name = callee.property.name;
+        }
+
+        if (!name || !URL_FIRST_ARG.has(name)) return;
+        rewriteArg(node.arguments[0]);
+      },
+
+      NewExpression(node) {
+        const callee = node.callee;
+        if (callee.type !== 'Identifier') return;
+        if (!URL_CONSTRUCTORS.has(callee.name)) return;
+        rewriteArg(node.arguments[0]);
+      },
+
+      ImportExpression(node) {
+        rewriteArg(node.source);
+      },
+
+      AssignmentExpression(node) {
+        const left = node.left;
+        if (left.type !== 'MemberExpression') return;
+        if (left.property.type !== 'Identifier') return;
+        const prop = left.property.name;
+        if (!['src', 'href', 'action', 'poster', 'data'].includes(prop)) return;
+        rewriteArg(node.right);
+      },
+    });
+  } catch {
+    return js;
+  }
+
+  try {
+    return magic.toString();
+  } catch {
+    return js;
   }
 }
 
@@ -120,81 +349,78 @@ function rewriteHTML(html, baseUrl) {
 
   const baseOrigin = new URL(baseUrl).origin;
 
-  // Inject runtime patchers for fetch/XHR + frame-bust killer
-$('head').prepend(`
-  <script>
-    (function() {
-      var ORIGIN = ${JSON.stringify(baseOrigin)};
-      var PROXY_PREFIX = '/proxy/';
-      var PROXY_URL = location.origin + PROXY_PREFIX;
+  $('head').prepend(`
+    <script>
+      (function() {
+        var ORIGIN = ${JSON.stringify(baseOrigin)};
+        var PROXY_PREFIX = '/proxy/';
 
-      // ---- THE CRITICAL FIX: Force import.meta.url to be the original site ----
-      // This makes React and Vite see the same module identity.
-      try {
-        var originalUrl = ORIGIN + location.pathname.replace(PROXY_PREFIX, '') + location.search + location.hash;
-        // We can't redefine import.meta.url directly, but we can trick modules into using the right one
-        // by ensuring all module scripts get the correct base URL.
-        // The <base> tag below handles this, but we'll also patch dynamic imports.
-        var _import = window.import;
-        // Dynamic import is tricky, but the <base> tag does most of the work.
-      } catch (e) {}
-
-      // ---- Location patch (keep this, it fixed the 404) ----
-      function cleanPath() {
-        var p = location.pathname;
-        if (p.indexOf(PROXY_PREFIX) === 0) {
-          var rest = p.slice(PROXY_PREFIX.length);
-          try {
-            var u = new URL(rest);
-            return u.pathname + u.search + u.hash;
-          } catch (e) {
-            return '/';
+        function cleanPath() {
+          var p = location.pathname;
+          if (p.indexOf(PROXY_PREFIX) === 0) {
+            var rest = p.slice(PROXY_PREFIX.length);
+            try {
+              var u = new URL(rest);
+              return u.pathname + u.search + u.hash;
+            } catch (e) {
+              return '/';
+            }
           }
+          return p;
         }
-        return p;
-      }
-      try {
-        var _pathname = cleanPath();
-        Object.defineProperty(window.location, 'pathname', { get: function() { return _pathname; } });
-        Object.defineProperty(window.location, 'href', { get: function() { return ORIGIN + _pathname; } });
-      } catch (e) {}
-
-      // ---- History API patch (keep this) ----
-      var _pushState = history.pushState;
-      history.pushState = function(state, title, url) {
-        var clean = url;
         try {
-          if (typeof url === 'string' && url.indexOf(PROXY_PREFIX) !== 0) {
-            clean = PROXY_PREFIX + ORIGIN + url;
-          }
+          var _pathname = cleanPath();
+          Object.defineProperty(window.location, 'pathname', { get: function() { return _pathname; } });
+          Object.defineProperty(window.location, 'href', { get: function() { return ORIGIN + _pathname; } });
         } catch (e) {}
-        return _pushState.call(this, state, title, clean);
-      };
-      var _replaceState = history.replaceState;
-      history.replaceState = function(state, title, url) {
-        var clean = url;
+
+        var _pushState = history.pushState;
+        history.pushState = function(state, title, url) {
+          var clean = url;
+          try {
+            if (typeof url === 'string' && url.indexOf(PROXY_PREFIX) !== 0) {
+              clean = PROXY_PREFIX + ORIGIN + url;
+            }
+          } catch (e) {}
+          return _pushState.call(this, state, title, clean);
+        };
+        var _replaceState = history.replaceState;
+        history.replaceState = function(state, title, url) {
+          var clean = url;
+          try {
+            if (typeof url === 'string' && url.indexOf(PROXY_PREFIX) !== 0) {
+              clean = PROXY_PREFIX + ORIGIN + url;
+            }
+          } catch (e) {}
+          return _replaceState.call(this, state, title, clean);
+        };
+
         try {
-          if (typeof url === 'string' && url.indexOf(PROXY_PREFIX) !== 0) {
-            clean = PROXY_PREFIX + ORIGIN + url;
-          }
+          Object.defineProperty(window, 'top', { get: function() { return window.self; } });
+          Object.defineProperty(window, 'parent', { get: function() { return window.self; } });
+          Object.defineProperty(window, 'frameElement', { get: function() { return null; } });
         } catch (e) {}
-        return _replaceState.call(this, state, title, clean);
-      };
 
-      // ---- Frame-bust killer (keep this) ----
-      try {
-        Object.defineProperty(window, 'top', { get: function() { return window.self; } });
-        Object.defineProperty(window, 'parent', { get: function() { return window.self; } });
-        Object.defineProperty(window, 'frameElement', { get: function() { return null; } });
-      } catch (e) {}
-    })();
-  </script>
-`);
+        var reloadCount = 0;
+        var _reload = location.reload.bind(location);
+        var reloadTimer = null;
+        function safeReload() {
+          reloadCount++;
+          if (reloadCount > 2) {
+            console.warn('[TemuNet] reload loop detected — stopping');
+            return;
+          }
+          clearTimeout(reloadTimer);
+          reloadTimer = setTimeout(function() { _reload(); }, 500);
+        }
+        try {
+          Object.defineProperty(location, 'reload', { value: safeReload, writable: false });
+        } catch (e) {}
+      })();
+    </script>
+  `);
 
-// THE KEY FIX: Add a <base> tag pointing to the original site's root.
-// This forces all relative module imports to resolve against the real URL,
-// which gives React and Vite a consistent module identity.
-$('head').prepend('<base href="' + new URL(baseUrl).origin + '/">');
+  $('head').prepend('<base href="' + new URL(baseUrl).origin + '/">');
 
   const attrs = ['href', 'src', 'action', 'poster', 'data-src', 'data-href', 'data-url'];
   attrs.forEach(attr => {

@@ -1,30 +1,39 @@
+const VERSION = "1.1.2";
+const DEFAULT_HOME = "https://www.google.com";
+
+// ---------- Status ----------
 function setStatus(msg, cls = '') {
   const el = document.getElementById('status');
-  if (el) {
-    el.textContent = 'SW: ' + msg;
-    el.className = 'status ' + cls;
-  }
+  const txt = document.getElementById('status-text');
+  if (el) el.className = 'status ' + cls;
+  if (txt) txt.textContent = msg;
   console.log('[app]', msg);
 }
 
-// ---------- SW registration ----------
+// ---------- Version ----------
+document.getElementById('version-text').textContent = 'v' + VERSION;
+document.getElementById('about-version').textContent = 'v' + VERSION;
+document.getElementById('about-runtime').textContent =
+  'Node ' + (navigator.userAgent.match(/Chrome\/(\d+)/)?.[1] || '?') + ' / SW';
+
+// ---------- Service Worker ----------
 let swReadyPromise = Promise.resolve(false);
 
 if (!('serviceWorker' in navigator)) {
-  setStatus('not supported', 'err');
+  setStatus('SW not supported', 'err');
 } else {
   setStatus('registering…');
 
   swReadyPromise = (async () => {
     try {
       await navigator.serviceWorker.register('/sw.js', { scope: '/' });
-      setStatus('registered, installing…');
+      setStatus('installing…');
 
       await navigator.serviceWorker.ready;
       setStatus('active');
 
       if (!navigator.serviceWorker.controller) {
-        setStatus('waiting for control…');
+        setStatus('waiting for control…', 'warn');
         await new Promise(resolve => {
           navigator.serviceWorker.addEventListener('controllerchange', resolve, { once: true });
           setTimeout(resolve, 3000);
@@ -32,32 +41,31 @@ if (!('serviceWorker' in navigator)) {
       }
 
       if (navigator.serviceWorker.controller) {
-        setStatus('controlling page ✓');
+        setStatus('ready', 'ok');
         return true;
       } else {
-        setStatus('registered but NOT controlling', 'warn');
+        setStatus('not controlling — reload', 'warn');
         return false;
       }
     } catch (err) {
-      setStatus('registration failed: ' + err.message, 'err');
+      setStatus('failed: ' + err.message, 'err');
       console.error('[app] SW error:', err);
       return false;
     }
   })();
 }
 
-// Auto-reload once after first SW activation
+// Reload once after first SW takes over
 (async () => {
   if (!('serviceWorker' in navigator)) return;
   await navigator.serviceWorker.ready;
   if (!navigator.serviceWorker.controller) {
-    console.log('[app] reloading to gain control');
     setTimeout(() => window.location.reload(), 300);
   }
 })();
 
-// ---------- Proxy launcher ----------
-async function go() {
+// ---------- Navigation ----------
+function go() {
   let input = document.getElementById('url').value.trim();
   if (!input) return;
 
@@ -65,20 +73,24 @@ async function go() {
     if (/\.[a-z]{2,}/i.test(input) && !input.includes(' ')) {
       input = 'https://' + input;
     } else {
-      input = 'https://duckduckgo.com/?q=' + encodeURIComponent(input);
+      input = 'https://www.google.com/search?q=' + encodeURIComponent(input);
     }
   }
 
-  setStatus('waiting for SW…');
+  loadUrl(input);
+}
+
+async function loadUrl(url) {
+  setStatus('loading ' + url);
+
   const ok = await swReadyPromise;
 
   if (!ok || !navigator.serviceWorker.controller) {
-    setStatus('SW not controlling — reload page', 'err');
-    alert('Service Worker not active. Reload the page and try again.');
+    setStatus('SW not ready — reload', 'err');
     return;
   }
 
-  const origin = new URL(input).origin;
+  const origin = new URL(url).origin;
 
   const cache = await caches.open('proxy-meta');
   await cache.put('/origin', new Response(origin));
@@ -88,12 +100,37 @@ async function go() {
     origin,
   });
 
-  setStatus('loading ' + origin);
-  await new Promise(r => setTimeout(r, 100));
-
-  document.getElementById('frame').src = '/proxy/' + input;
+  await new Promise(r => setTimeout(r, 50));
+  document.getElementById('frame').src = '/proxy/' + url;
 }
 
+function reloadFrame() {
+  const frame = document.getElementById('frame');
+  frame.src = frame.src;
+}
+
+// ---------- About modal ----------
+function openAbout() {
+  document.getElementById('about-modal').classList.add('open');
+}
+function closeAbout(e) {
+  if (e && e.target !== e.currentTarget) return;
+  document.getElementById('about-modal').classList.remove('open');
+}
+
+// ---------- Events ----------
 document.getElementById('url').addEventListener('keydown', e => {
   if (e.key === 'Enter') go();
+});
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeAbout();
+});
+
+// ---------- Initial load: Google ----------
+window.addEventListener('load', () => {
+  setTimeout(() => {
+    document.getElementById('url').value = 'google.com';
+    loadUrl(DEFAULT_HOME);
+  }, 200);
 });

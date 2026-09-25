@@ -5,19 +5,87 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>TemuNet</title>
   <link rel="stylesheet" href="/style.css" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8C%90%3C/text%3E%3C/svg%3E" />
 </head>
 <body>
   <header class="bar">
-    <input id="url" placeholder="Enter a URL or search..." autocomplete="off" />
-    <button onclick="go()">Go</button>
+    <div class="bar-left">
+      <button class="icon-btn" onclick="history.back()" title="Back">←</button>
+      <button class="icon-btn" onclick="history.forward()" title="Forward">→</button>
+      <button class="icon-btn" onclick="reloadFrame()" title="Reload">⟳</button>
+    </div>
+
+    <div class="bar-center">
+      <input
+        id="url"
+        placeholder="Search Google or type a URL"
+        autocomplete="off"
+        spellcheck="false"
+      />
+      <button class="go-btn" onclick="go()">Go</button>
+    </div>
+
+    <div class="bar-right">
+      <button class="icon-btn" onclick="openAbout()" title="About">ℹ</button>
+    </div>
   </header>
 
   <iframe
     id="frame"
-    sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
+    sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads"
+    allow="clipboard-read; clipboard-write; fullscreen"
   ></iframe>
 
-  <div id="status" class="status">SW: initializing…</div>
+  <div id="status" class="status">
+    <span class="status-dot"></span>
+    <span id="status-text">initializing…</span>
+    <span class="status-version" id="version-text"></span>
+  </div>
+
+  <!-- About modal -->
+  <div id="about-modal" class="modal-backdrop" onclick="closeAbout(event)">
+    <div class="modal" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <h2>TemuNet</h2>
+        <button class="icon-btn" onclick="closeAbout()" title="Close">✕</button>
+      </div>
+
+      <div class="modal-body">
+        <p class="tagline">A fast, lightweight proxy for school networks.</p>
+
+        <div class="feature-grid">
+          <div class="feature works">
+            <h3>✓ Works on</h3>
+            <ul>
+              <li>Game sites (HTML5, no auth)</li>
+              <li>Docs, wikis, articles</li>
+              <li>React/Vite apps with public APIs</li>
+              <li>VS Code Web, Modrinth, and similar</li>
+            </ul>
+          </div>
+
+          <div class="feature fails">
+            <h3>✗ Doesn't work on</h3>
+            <ul>
+              <li>ChatGPT, Claude, Discord</li>
+              <li>Most multiplayer games</li>
+              <li>YouTube</li>
+              <li>Sites with strict security</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="modal-meta">
+          <div><span class="label">Version</span> <span id="about-version">—</span></div>
+          <div><span class="label">Built by</span> <span>???</span></div>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn-primary" onclick="closeAbout()">Close</button>
+      </div>
+    </div>
+  </div>
 
   <script src="/app.js"></script>
 </body>
