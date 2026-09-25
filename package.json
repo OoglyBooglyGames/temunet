@@ -1,13 +1,22 @@
 {
-  "name": "vercel-web-proxy",
+  "name": "temunet",
   "version": "1.0.0",
-  "description": "Ultimate web proxy for Vercel",
+  "description": "",
   "scripts": {
-    "dev": "vercel dev",
-    "deploy": "vercel --prod"
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/OoglyBooglyGames/temunet.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/OoglyBooglyGames/temunet/issues"
+  },
+  "homepage": "https://github.com/OoglyBooglyGames/temunet#readme",
   "dependencies": {
-    "node-fetch": "^2.7.0",
-    "cheerio": "^1.0.0-rc.12"
+    "cheerio": "^1.2.0"
   }
 }
