@@ -11,10 +11,14 @@
     <input id="url" placeholder="Enter a URL or search..." autocomplete="off" />
     <button onclick="go()">Go</button>
   </header>
+
   <iframe
     id="frame"
     sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
   ></iframe>
+
+  <div id="status" class="status">SW: initializing…</div>
+
   <script src="/app.js"></script>
 </body>
 </html>
