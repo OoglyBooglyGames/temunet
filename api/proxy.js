@@ -1,8 +1,7 @@
-const cheerio = require('cheerio');
-const acorn = require('acorn');
-const walk = require('acorn-walk');
-const MagicStringModule = require('magic-string');
-const MagicString = MagicStringModule.default || MagicStringModule;
+import * as cheerio from 'cheerio';
+import * as acorn from 'acorn';
+import * as walk from 'acorn-walk';
+import MagicString from 'magic-string';
 
 // ---------- BYPASS WHITELIST ----------
 const BYPASS_HOSTS = [
@@ -98,7 +97,7 @@ function shouldSkipRewrite(targetUrl, js) {
   return false;
 }
 
-module.exports = async function handler(req, res) {
+export default async function handler(req, res) {
   // ----- Infer origin from Referer for same-origin same-site calls -----
   if (!req.query.url && req.url && req.url !== '/') {
     const referer = req.headers.referer || '';
@@ -115,7 +114,7 @@ module.exports = async function handler(req, res) {
     targetUrl = targetUrl.slice(1);
   }
 
-  // FIX #1: Un-collapse the scheme if Vercel collapsed https:// to https:/
+  // Un-collapse the scheme if Vercel collapsed https:// to https:/
   if (targetUrl) {
     targetUrl = targetUrl.replace(/^(https?):\/(?!\/)/, '$1://');
   }
@@ -139,7 +138,6 @@ module.exports = async function handler(req, res) {
 
   const ext = (urlObj.pathname.split('.').pop() || '').toLowerCase();
 
-  // FIX #2: Classify the request by extension, not response content-type
   const isImage = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'ico', 'avif'].includes(ext);
   const isJS = ['js', 'mjs', 'cjs'].includes(ext);
   const isCSS = ext === 'css';
@@ -208,8 +206,7 @@ module.exports = async function handler(req, res) {
       return res.send(rewritten);
     }
 
-    // ---------- HTML (ONLY if extension isn't image/js/css) ----------
-    // FIX #2 continued: images never enter this branch
+    // ---------- HTML ----------
     if (!isImage && contentType.includes('text/html')) {
       let html = await upstream.text();
       html = rewriteHTML(html, targetUrl);
@@ -224,14 +221,12 @@ module.exports = async function handler(req, res) {
 
     let forcedType = contentType;
     if (isImage) {
-      // Force image MIME based on extension
       const imageExt = ext === 'jpg' ? 'jpeg' : ext === 'svg' ? 'svg+xml' : ext;
       forcedType = 'image/' + imageExt;
     } else if (ext === 'json') {
       forcedType = 'application/json; charset=utf-8';
     }
 
-    // If upstream returned HTML for an image request, log it
     if (isImage && contentType.includes('text/html')) {
       console.error('Upstream returned HTML for image:', targetUrl, '— status:', upstream.status);
     }
@@ -243,9 +238,9 @@ module.exports = async function handler(req, res) {
 
   } catch (err) {
     console.error(err);
-    return res.status(500).send('Proxy error: ' + err.message);
+    return res.status(502).send('Proxy error: ' + err.message);
   }
-};
+}
 
 // -------- Helpers --------
 
