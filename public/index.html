@@ -32,14 +32,48 @@
 
   <iframe
     id="frame"
-    sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads"
-    allow="clipboard-read; clipboard-write; fullscreen"
+    sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads allow-pointer-lock"
+    allow="clipboard-read; clipboard-write; fullscreen; pointer-lock; gamepad; autoplay"
   ></iframe>
 
   <div id="status" class="status">
     <span class="status-dot"></span>
     <span id="status-text">initializing…</span>
     <span class="status-version" id="version-text"></span>
+  </div>
+
+  <!-- First-load warning modal -->
+  <div id="welcome-modal" class="modal-backdrop">
+    <div class="modal">
+      <div class="modal-header">
+        <h2>Welcome to TemuNet</h2>
+      </div>
+
+      <div class="modal-body">
+        <p class="tagline" style="margin-bottom: 16px;">
+          TemuNet works by routing every request through a pr0Xy s3rv3r, which means
+          it has to fetch, rewrite, and re-serve each page and file.
+        </p>
+
+        <div class="feature works" style="border-left-color: #fbbf24;">
+          <h3 style="color: #fbbf24;">⚠ Heads up</h3>
+          <ul style="line-height: 1.8;">
+            <li>Sites will load <strong>slower</strong> than usual</li>
+            <li>Large pages or games may take <strong>10–30 seconds</strong></li>
+            <li>Some images or features may take a moment to appear</li>
+            <li>If it looks frozen, <strong>wait a bit, don't spam reload!</strong></li>
+          </ul>
+        </div>
+
+        <p class="tagline" style="margin-top: 16px; margin-bottom: 0;">
+          You only see this message once. Click below to get started.
+        </p>
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn-primary" onclick="closeWelcome()">Got it, let me in</button>
+      </div>
+    </div>
   </div>
 
   <!-- About modal -->
@@ -85,6 +119,25 @@
       </div>
     </div>
   </div>
+
+  <script>
+    // Show welcome modal on first visit only
+    (function() {
+      var KEY = 'temunet_welcome_seen_v1';
+      var seen = false;
+      try { seen = localStorage.getItem(KEY) === '1'; } catch (e) {}
+      if (!seen) {
+        var m = document.getElementById('welcome-modal');
+        if (m) m.classList.add('open');
+      }
+    })();
+
+    function closeWelcome() {
+      var m = document.getElementById('welcome-modal');
+      if (m) m.classList.remove('open');
+      try { localStorage.setItem('temunet_welcome_seen_v1', '1'); } catch (e) {}
+    }
+  </script>
 
   <script src="/app.js"></script>
 </body>
