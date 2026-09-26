@@ -25,7 +25,6 @@ const BYPASS_HOSTS = [
   'posthog.com',
   'plausible.io',
   'datadoghq.com',
-  // Anthropic's asset CDN — huge vendor bundles get corrupted by rewriting
   'assets-proxy.anthropic.com',
 ];
 
@@ -35,21 +34,37 @@ const BYPASS_PATH_PATTERNS = [
   /\/statsc\//,
   /\/statsig\//,
   /\/flush\b/,
-  // Anthropic's claude-ai asset tree
   /^\/claude-ai\/v2\/assets\//,
 ];
 
-// ---------- EXPLICIT URL BYPASS ----------
-// Exact substring matches that should NEVER be proxied.
 const BYPASS_URL_SUBSTRINGS = [
   'assets-proxy.anthropic.com/claude-ai/v2/assets/v1/vendor-all-0-UFkBfsaM.js',
   'vendor-all-0-UFkBfsaM.js',
 ];
 
+const FORCE_PROXY_HOSTS = [
+  'reddit.com',
+  'redditstatic.com',
+  'redd.it',
+  'redditmedia.com',
+];
+
+function shouldForceProxy(url) {
+  if (typeof url !== 'string' || !url) return false;
+  try {
+    const u = new URL(url);
+    const host = u.hostname;
+    for (const h of FORCE_PROXY_HOSTS) {
+      if (host === h || host.endsWith('.' + h)) return true;
+    }
+  } catch {}
+  return false;
+}
+
 function shouldBypass(url) {
   if (typeof url !== 'string' || !url) return false;
+  if (shouldForceProxy(url)) return false;
 
-  // Fast path — exact substring match
   for (const sub of BYPASS_URL_SUBSTRINGS) {
     if (url.includes(sub)) return true;
   }
@@ -67,19 +82,10 @@ function shouldBypass(url) {
   return false;
 }
 
-// ---------- JS REWRITE SKIP LIST ----------
 const REWRITE_SKIP_PATTERNS = [
-  '/vendor-',
-  'vendor.',
-  '/shared-',
-  '/chunk-',
-  'rolldown',
-  'preload-helper',
-  'runtime-',
-  'bundle.',
-  '.bundle.',
-  '/polyfills',
-  'regenerator-runtime',
+  '/vendor-', 'vendor.', '/shared-', '/chunk-', 'rolldown',
+  'preload-helper', 'runtime-', 'bundle.', '.bundle.',
+  '/polyfills', 'regenerator-runtime',
 ];
 
 function shouldSkipRewrite(targetUrl, js) {
@@ -93,21 +99,32 @@ function shouldSkipRewrite(targetUrl, js) {
 }
 
 module.exports = async function handler(req, res) {
+  // ----- Infer origin from Referer for same-origin same-site calls -----
+  if (!req.query.url && req.url && req.url !== '/') {
+    const referer = req.headers.referer || '';
+    const m = referer.match(/\/proxy\/(https?:\/\/[^\/]+)/);
+    if (m) {
+      req.query.url = m[1] + req.url.split('?')[0] +
+        (req.url.includes('?') ? '?' + req.url.split('?').slice(1).join('?') : '');
+    }
+  }
+
   let targetUrl = req.query.url;
 
   if (targetUrl && targetUrl.startsWith('/')) {
     targetUrl = targetUrl.slice(1);
   }
 
+  // FIX #1: Un-collapse the scheme if Vercel collapsed https:// to https:/
+  if (targetUrl) {
+    targetUrl = targetUrl.replace(/^(https?):\/(?!\/)/, '$1://');
+  }
+
   if (!targetUrl) {
     return res.status(400).send('Missing url');
   }
 
-  // If the URL is on the bypass list, tell the client to fetch it directly.
-  // We can't serve it, because the whole point is that it should never have
-  // been routed here in the first place. Return the target URL so the browser
-  // retries it directly.
-  if (shouldBypass(targetUrl)) {
+  if (!shouldForceProxy(targetUrl) && shouldBypass(targetUrl)) {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('X-Bypass', '1');
     return res.redirect(302, targetUrl);
@@ -122,12 +139,17 @@ module.exports = async function handler(req, res) {
 
   const ext = (urlObj.pathname.split('.').pop() || '').toLowerCase();
 
+  // FIX #2: Classify the request by extension, not response content-type
+  const isImage = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'ico', 'avif'].includes(ext);
+  const isJS = ['js', 'mjs', 'cjs'].includes(ext);
+  const isCSS = ext === 'css';
+
   let accept;
-  if (['js', 'mjs', 'cjs'].includes(ext)) {
+  if (isJS) {
     accept = 'application/javascript,text/javascript,*/*;q=0.1';
-  } else if (ext === 'css') {
+  } else if (isCSS) {
     accept = 'text/css,*/*;q=0.1';
-  } else if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'ico'].includes(ext)) {
+  } else if (isImage) {
     accept = 'image/*,*/*;q=0.1';
   } else if (['woff', 'woff2', 'ttf', 'otf'].includes(ext)) {
     accept = 'font/*,*/*;q=0.1';
@@ -155,7 +177,7 @@ module.exports = async function handler(req, res) {
     const contentType = upstream.headers.get('content-type') || '';
 
     // ---------- CSS ----------
-    if (contentType.includes('text/css') || ext === 'css') {
+    if (isCSS || contentType.includes('text/css')) {
       let css = await upstream.text();
       css = rewriteCSS(css, targetUrl);
       res.setHeader('Content-Type', 'text/css; charset=utf-8');
@@ -165,10 +187,7 @@ module.exports = async function handler(req, res) {
     }
 
     // ---------- JavaScript ----------
-    if (['js', 'mjs', 'cjs'].includes(ext) ||
-        contentType.includes('javascript') ||
-        contentType.includes('ecmascript')) {
-
+    if (isJS || contentType.includes('javascript') || contentType.includes('ecmascript')) {
       const js = await upstream.text();
       let rewritten = js;
 
@@ -189,8 +208,9 @@ module.exports = async function handler(req, res) {
       return res.send(rewritten);
     }
 
-    // ---------- HTML ----------
-    if (contentType.includes('text/html')) {
+    // ---------- HTML (ONLY if extension isn't image/js/css) ----------
+    // FIX #2 continued: images never enter this branch
+    if (!isImage && contentType.includes('text/html')) {
       let html = await upstream.text();
       html = rewriteHTML(html, targetUrl);
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
@@ -199,12 +219,22 @@ module.exports = async function handler(req, res) {
       return res.send(html);
     }
 
-    // ---------- Everything else ----------
+    // ---------- Everything else (images, fonts, videos, unknown) ----------
     const buffer = Buffer.from(await upstream.arrayBuffer());
 
     let forcedType = contentType;
-    if (ext === 'json') forcedType = 'application/json; charset=utf-8';
-    else if (ext === 'svg') forcedType = 'image/svg+xml';
+    if (isImage) {
+      // Force image MIME based on extension
+      const imageExt = ext === 'jpg' ? 'jpeg' : ext === 'svg' ? 'svg+xml' : ext;
+      forcedType = 'image/' + imageExt;
+    } else if (ext === 'json') {
+      forcedType = 'application/json; charset=utf-8';
+    }
+
+    // If upstream returned HTML for an image request, log it
+    if (isImage && contentType.includes('text/html')) {
+      console.error('Upstream returned HTML for image:', targetUrl, '— status:', upstream.status);
+    }
 
     res.setHeader('Content-Type', forcedType);
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -222,6 +252,7 @@ module.exports = async function handler(req, res) {
 function proxify(rawUrl, baseUrl) {
   try {
     const abs = new URL(rawUrl, baseUrl).href;
+    if (shouldForceProxy(abs)) return '/proxy/' + abs;
     if (shouldBypass(abs)) return abs;
     return '/proxy/' + abs;
   } catch {
@@ -251,6 +282,12 @@ function rewriteJS(js, baseUrl) {
     if (typeof s !== 'string' || !s) return false;
     if (/^(data|blob|javascript|mailto|tel|about|chrome|chrome-extension):/i.test(s)) return false;
     if (s.startsWith('#')) return false;
+
+    if (shouldForceProxy(s)) {
+      if (s.startsWith('/proxy/')) return false;
+      return true;
+    }
+
     if (s.startsWith('/proxy/')) return false;
     if (s.startsWith('/')) return true;
     if (s.startsWith('http://') || s.startsWith('https://') || s.startsWith('//')) return true;
@@ -259,7 +296,9 @@ function rewriteJS(js, baseUrl) {
 
   function rewrite(raw) {
     try {
+      if (raw.startsWith('/proxy/')) return raw;
       const abs = new URL(raw, baseUrl).href;
+      if (shouldForceProxy(abs)) return '/proxy/' + abs;
       if (shouldBypass(abs)) return raw;
       return '/proxy/' + abs;
     } catch {
@@ -299,28 +338,22 @@ function rewriteJS(js, baseUrl) {
       CallExpression(node) {
         const callee = node.callee;
         let name = null;
-
-        if (callee.type === 'Identifier') {
-          name = callee.name;
-        } else if (callee.type === 'MemberExpression' && callee.property.type === 'Identifier') {
+        if (callee.type === 'Identifier') name = callee.name;
+        else if (callee.type === 'MemberExpression' && callee.property.type === 'Identifier') {
           name = callee.property.name;
         }
-
         if (!name || !URL_FIRST_ARG.has(name)) return;
         rewriteArg(node.arguments[0]);
       },
-
       NewExpression(node) {
         const callee = node.callee;
         if (callee.type !== 'Identifier') return;
         if (!URL_CONSTRUCTORS.has(callee.name)) return;
         rewriteArg(node.arguments[0]);
       },
-
       ImportExpression(node) {
         rewriteArg(node.source);
       },
-
       AssignmentExpression(node) {
         const left = node.left;
         if (left.type !== 'MemberExpression') return;
@@ -354,6 +387,98 @@ function rewriteHTML(html, baseUrl) {
       (function() {
         var ORIGIN = ${JSON.stringify(baseOrigin)};
         var PROXY_PREFIX = '/proxy/';
+        var FORCE_HOSTS = ${JSON.stringify(FORCE_PROXY_HOSTS)};
+
+        function isForced(url) {
+          try {
+            var u = new URL(url, ORIGIN);
+            var host = u.hostname;
+            for (var i = 0; i < FORCE_HOSTS.length; i++) {
+              var h = FORCE_HOSTS[i];
+              if (host === h || host.slice(-(h.length + 1)) === '.' + h) return true;
+            }
+          } catch (e) {}
+          return false;
+        }
+
+        function absolute(u) {
+          try {
+            if (typeof u !== 'string') return u;
+            if (u.indexOf('/proxy/') === 0) return u;
+            if (u.charAt(0) === '/') return ORIGIN + u;
+            return u;
+          } catch (e) { return u; }
+        }
+
+        var _fetch = window.fetch;
+        window.fetch = function(input, init) {
+          try {
+            var u = typeof input === 'string' ? input : (input && input.url);
+            if (u) {
+              var abs = absolute(u);
+              var forced = isForced(abs);
+              var needsProxy = forced ||
+                (typeof u === 'string' && u.charAt(0) === '/' && u.indexOf('/proxy/') !== 0);
+
+              if (needsProxy && u.indexOf('/proxy/') !== 0) {
+                var proxied = '/proxy/' + abs;
+                if (typeof input === 'string') input = proxied;
+                else input = new Request(proxied, input);
+              }
+            }
+          } catch (e) {}
+          return _fetch.call(this, input, init);
+        };
+
+        var _open = XMLHttpRequest.prototype.open;
+        XMLHttpRequest.prototype.open = function(method, url) {
+          try {
+            if (typeof url === 'string') {
+              var abs = absolute(url);
+              if (isForced(abs) && url.indexOf('/proxy/') !== 0) {
+                arguments[1] = '/proxy/' + abs;
+              } else if (url.charAt(0) === '/' && url.indexOf('/proxy/') !== 0) {
+                arguments[1] = '/proxy/' + abs;
+              }
+            }
+          } catch (e) {}
+          return _open.apply(this, arguments);
+        };
+
+        try {
+          var _imgSrcDesc = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'src');
+          if (_imgSrcDesc && _imgSrcDesc.set) {
+            Object.defineProperty(HTMLImageElement.prototype, 'src', {
+              set: function(v) {
+                try {
+                  if (typeof v === 'string' && v.indexOf('/proxy/') !== 0) {
+                    var abs = absolute(v);
+                    if (isForced(abs)) v = '/proxy/' + abs;
+                  }
+                } catch (e) {}
+                return _imgSrcDesc.set.call(this, v);
+              },
+              get: _imgSrcDesc.get,
+            });
+          }
+        } catch (e) {}
+
+        try {
+          var _setAttr = Element.prototype.setAttribute;
+          Element.prototype.setAttribute = function(name, value) {
+            try {
+              if (typeof value === 'string' && value.indexOf('/proxy/') !== 0) {
+                if (name === 'src' || name === 'href' || name === 'srcset' ||
+                    name === 'data-src' || name === 'data-href' || name === 'data-url' ||
+                    name === 'action' || name === 'poster') {
+                  var abs = absolute(value);
+                  if (isForced(abs)) value = '/proxy/' + abs;
+                }
+              }
+            } catch (e) {}
+            return _setAttr.call(this, name, value);
+          };
+        } catch (e) {}
 
         function cleanPath() {
           var p = location.pathname;
@@ -372,6 +497,7 @@ function rewriteHTML(html, baseUrl) {
           var _pathname = cleanPath();
           Object.defineProperty(window.location, 'pathname', { get: function() { return _pathname; } });
           Object.defineProperty(window.location, 'href', { get: function() { return ORIGIN + _pathname; } });
+          Object.defineProperty(window.location, 'origin', { get: function() { return ORIGIN; } });
         } catch (e) {}
 
         var _pushState = history.pushState;

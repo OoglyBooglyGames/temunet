@@ -1,4 +1,4 @@
-const VERSION = "1.1.2";
+const VERSION = "1.1.8";
 const DEFAULT_HOME = "https://www.google.com";
 
 // ---------- Status ----------
@@ -11,11 +11,17 @@ function setStatus(msg, cls = '') {
 }
 
 // ---------- Version ----------
-document.getElementById('version-text').textContent = 'v' + VERSION;
-document.getElementById('about-version').textContent = 'v' + VERSION;
-document.getElementById('about-runtime').textContent =
-  'Node ' + (navigator.userAgent.match(/Chrome\/(\d+)/)?.[1] || '?') + ' / SW';
+const versionEl = document.getElementById('version-text');
+if (versionEl) versionEl.textContent = 'v' + VERSION;
 
+const aboutVersionEl = document.getElementById('about-version');
+if (aboutVersionEl) aboutVersionEl.textContent = 'v' + VERSION;
+
+const aboutRuntimeEl = document.getElementById('about-runtime');
+if (aboutRuntimeEl) {
+  const chromeVer = (navigator.userAgent.match(/Chrome\/(\d+)/) || [])[1] || '?';
+  aboutRuntimeEl.textContent = 'Chrome ' + chromeVer + ' / SW';
+}
 // ---------- Service Worker ----------
 let swReadyPromise = Promise.resolve(false);
 
