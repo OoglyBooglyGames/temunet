@@ -28,6 +28,53 @@ self.addEventListener('activate', e => {
   e.waitUntil(self.clients.claim());
 });
 
+// ---------- Origin tracking ----------
+let storedOrigin = null;
+
+async function setStoredOrigin(origin) {
+  storedOrigin = origin;
+  try {
+    const cache = await caches.open('proxy-meta');
+    await cache.put('/origin', new Response(origin));
+  } catch (e) {
+    console.warn('[SW] failed to cache origin:', e);
+  }
+}
+
+async function getStoredOrigin() {
+  // 1. In-memory
+  if (storedOrigin) return storedOrigin;
+
+  // 2. Cache API
+  try {
+    const cache = await caches.open('proxy-meta');
+    const res = await cache.match('/origin');
+    if (res) {
+      storedOrigin = await res.text();
+      return storedOrigin;
+    }
+  } catch (e) {}
+
+  return null;
+}
+
+self.addEventListener('message', event => {
+  if (event.data && event.data.type === 'SET_ORIGIN') {
+    console.log('[SW] stored origin =', event.data.origin);
+    setStoredOrigin(event.data.origin);
+  }
+});
+
+// ---------- Referrer-based origin inference ----------
+// If the cache/memory is empty, try to recover the origin from the request's
+// referrer (which looks like http://localhost:3000/proxy/https://site.com/...).
+function originFromReferer(referer) {
+  if (!referer) return null;
+  const m = referer.match(/\/proxy\/(https?:\/\/[^\/]+)/);
+  return m ? m[1] : null;
+}
+
+// ---------- Fetch handler ----------
 self.addEventListener('fetch', event => {
   const url = new URL(event.request.url);
 
@@ -50,26 +97,49 @@ self.addEventListener('fetch', event => {
   // Only intercept same-origin requests or cross-origin requests on the force list
   if (!isSameOrigin && !isCrossOriginForced) return;
 
-  console.log('[SW] intercept:', isCrossOriginForced ? 'XORIGIN ' + url.href : url.pathname);
-
   event.respondWith((async () => {
-    // For cross-origin requests, use the full URL directly
-    // For same-origin requests, resolve against the stored proxy origin
     let absolute;
 
     if (isCrossOriginForced) {
+      // Cross-origin requests already have the full URL
       absolute = url.href;
     } else {
-      const origin = await getStoredOrigin();
+      // Same-origin requests need an origin to reconstruct against
+      let origin = await getStoredOrigin();
+
+      // Fallback 1: infer from the request's referrer
       if (!origin) {
-        console.warn('[SW] no origin stored');
+        origin = originFromReferer(event.request.referrer);
+        if (origin) {
+          console.log('[SW] inferred origin from referrer:', origin);
+          setStoredOrigin(origin);
+        }
+      }
+
+      // Fallback 2: use the tab's own URL if it's a proxied page
+      if (!origin) {
+        try {
+          const client = await self.clients.get(event.clientId);
+          if (client && client.url) {
+            const m = client.url.match(/\/proxy\/(https?:\/\/[^\/]+)/);
+            if (m) {
+              origin = m[1];
+              console.log('[SW] inferred origin from client url:', origin);
+              setStoredOrigin(origin);
+            }
+          }
+        } catch (e) {}
+      }
+
+      if (!origin) {
+        console.warn('[SW] no origin — passing through:', url.pathname);
         return fetch(event.request);
       }
+
       absolute = origin + url.pathname + url.search;
     }
 
     const proxied = PROXY + absolute;
-    console.log('[SW] →', proxied);
 
     const method = event.request.method;
     const init = {
@@ -84,8 +154,8 @@ self.addEventListener('fetch', event => {
       init.body = await event.request.clone().arrayBuffer();
     }
 
-    // Strip Origin header — Vercel's function will set its own Referer, and
-    // keeping localhost origin makes some CDNs reject the request.
+    // Strip Origin and Referer — Vercel sets its own, and leaving localhost
+    // causes some CDNs to reject the request.
     try {
       const headers = new Headers(event.request.headers);
       headers.delete('Origin');
@@ -96,26 +166,3 @@ self.addEventListener('fetch', event => {
     return fetch(proxied, init);
   })());
 });
-
-let storedOrigin = null;
-
-self.addEventListener('message', event => {
-  if (event.data && event.data.type === 'SET_ORIGIN') {
-    storedOrigin = event.data.origin;
-    console.log('[SW] stored origin =', storedOrigin);
-    caches.open('proxy-meta').then(c =>
-      c.put('/origin', new Response(event.data.origin))
-    );
-  }
-});
-
-async function getStoredOrigin() {
-  if (storedOrigin) return storedOrigin;
-  const cache = await caches.open('proxy-meta');
-  const res = await cache.match('/origin');
-  if (res) {
-    storedOrigin = await res.text();
-    return storedOrigin;
-  }
-  return null;
-}

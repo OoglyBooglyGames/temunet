@@ -2,7 +2,6 @@
   "version": 2,
   "rewrites": [
     { "source": "/proxy/(.*)", "destination": "/api/proxy?url=$1" },
-    { "source": "/js/concat", "destination": "/api/proxy?url=https://www.redditstatic.com/js/concat&__forward=1" },
-    { "source": "/proxy/(.*)", "destination": "/api/proxy?url=$1" }
+    { "source": "/js/concat(.*)", "destination": "/api/proxy?url=https://www.redditstatic.com/js/concat$1" }
   ]
 }
