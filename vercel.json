@@ -3,6 +3,8 @@
   "rewrites": [
     { "source": "/proxy/(.*)", "destination": "/api/proxy?url=$1" },
     { "source": "/js/concat(.*)", "destination": "/api/proxy?url=https://www.redditstatic.com/js/concat$1" },
-    { "source": "/results(.*)", "destination": "/api/proxy?url=https://www.youtube.com/results$1" }
+    { "source": "/search(.*)", "destination": "/api/proxy?url=https://www.google.com/search$1" },
+    { "source": "/results(.*)", "destination": "/api/proxy?url=https://www.youtube.com/results$1" },
+    { "source": "/watch(.*)", "destination": "/api/proxy?url=https://www.youtube.com/watch$1" }
   ]
 }
