@@ -98,7 +98,6 @@ function shouldSkipRewrite(targetUrl, js) {
 }
 
 export default async function handler(req, res) {
-  // ----- Infer origin from Referer for same-origin same-site calls -----
   if (!req.query.url && req.url && req.url !== '/') {
     const referer = req.headers.referer || '';
     const m = referer.match(/\/proxy\/(https?:\/\/[^\/]+)/);
@@ -114,7 +113,6 @@ export default async function handler(req, res) {
     targetUrl = targetUrl.slice(1);
   }
 
-  // Un-collapse the scheme if Vercel collapsed https:// to https:/
   if (targetUrl) {
     targetUrl = targetUrl.replace(/^(https?):\/(?!\/)/, '$1://');
   }
@@ -174,7 +172,6 @@ export default async function handler(req, res) {
 
     const contentType = upstream.headers.get('content-type') || '';
 
-    // ---------- CSS ----------
     if (isCSS || contentType.includes('text/css')) {
       let css = await upstream.text();
       css = rewriteCSS(css, targetUrl);
@@ -184,7 +181,6 @@ export default async function handler(req, res) {
       return res.send(css);
     }
 
-    // ---------- JavaScript ----------
     if (isJS || contentType.includes('javascript') || contentType.includes('ecmascript')) {
       const js = await upstream.text();
       let rewritten = js;
@@ -206,7 +202,6 @@ export default async function handler(req, res) {
       return res.send(rewritten);
     }
 
-    // ---------- HTML ----------
     if (!isImage && contentType.includes('text/html')) {
       let html = await upstream.text();
       html = rewriteHTML(html, targetUrl);
@@ -216,7 +211,6 @@ export default async function handler(req, res) {
       return res.send(html);
     }
 
-    // ---------- Everything else (images, fonts, videos, unknown) ----------
     const buffer = Buffer.from(await upstream.arrayBuffer());
 
     let forcedType = contentType;
@@ -405,6 +399,73 @@ function rewriteHTML(html, baseUrl) {
           } catch (e) { return u; }
         }
 
+        // ---- Navigation interceptor ----
+        function redirectToProxy(u) {
+          try {
+            if (typeof u !== 'string') return u;
+            if (u.indexOf('/proxy/') === 0) return u;
+            if (u.charAt(0) === '/') return PROXY_PREFIX + ORIGIN + u;
+            if (u.indexOf(ORIGIN + '/') === 0) return PROXY_PREFIX + u;
+            if (u.indexOf('http://') === 0 || u.indexOf('https://') === 0) {
+              return PROXY_PREFIX + u;
+            }
+            return u;
+          } catch (e) {
+            return u;
+          }
+        }
+
+        try {
+          var _assign = window.location.assign.bind(window.location);
+          window.location.assign = function(u) {
+            return _assign(redirectToProxy(u));
+          };
+        } catch (e) {}
+
+        try {
+          var _replace = window.location.replace.bind(window.location);
+          window.location.replace = function(u) {
+            return _replace(redirectToProxy(u));
+          };
+        } catch (e) {}
+
+        // ---- Intercept anchor clicks ----
+        document.addEventListener('click', function(e) {
+          try {
+            var a = e.target && e.target.closest && e.target.closest('a[href]');
+            if (!a) return;
+            var href = a.getAttribute('href');
+            if (!href) return;
+            if (href.indexOf('/proxy/') === 0) return;
+            if (href.charAt(0) === '#' || href.indexOf('javascript:') === 0) return;
+            if (href.charAt(0) === '/' || href.indexOf(ORIGIN + '/') === 0 ||
+                href.indexOf('http://') === 0 || href.indexOf('https://') === 0) {
+              e.preventDefault();
+              e.stopPropagation();
+              window.location.href = redirectToProxy(href);
+            }
+          } catch (err) {}
+        }, true);
+
+        // ---- Intercept form submissions ----
+        document.addEventListener('submit', function(e) {
+          try {
+            var form = e.target;
+            if (!form || !form.action) return;
+            var action = form.getAttribute('action') || '';
+            if (action.indexOf('/proxy/') === 0) return;
+            if (action.charAt(0) === '/' || action.indexOf(ORIGIN + '/') === 0) {
+              e.preventDefault();
+              e.stopPropagation();
+              var qs = new URLSearchParams(new FormData(form)).toString();
+              var sep = action.indexOf('?') >= 0 ? '&' : '?';
+              var target = redirectToProxy(action) + (qs ? sep + qs : '');
+              window.location.href = target;
+            }
+          } catch (err) {}
+        }, true);
+
+        // ---- fetch patch ----
         var _fetch = window.fetch;
         window.fetch = function(input, init) {
           try {
