@@ -1,5 +1,4 @@
-const VERSION = "1.1.9";
-const DEFAULT_HOME = "https://www.google.com";
+const VERSION = "1.1.10";
 
 // ---------- Status ----------
 function setStatus(msg, cls = '') {
@@ -131,12 +130,4 @@ document.getElementById('url').addEventListener('keydown', e => {
 
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') closeAbout();
-});
-
-// ---------- Initial load: Google ----------
-window.addEventListener('load', () => {
-  setTimeout(() => {
-    document.getElementById('url').value = 'google.com';
-    loadUrl(DEFAULT_HOME);
-  }, 200);
 });
