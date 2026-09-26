@@ -447,23 +447,63 @@ function rewriteHTML(html, baseUrl) {
           } catch (err) {}
         }, true);
 
-        // ---- Intercept form submissions ----
-        document.addEventListener('submit', function(e) {
+        // ---- Intercept form submissions (event-based) ----
+        function onFormSubmit(e) {
           try {
             var form = e.target;
-            if (!form || !form.action) return;
+            if (!form || form.tagName !== 'FORM') return;
             var action = form.getAttribute('action') || '';
             if (action.indexOf('/proxy/') === 0) return;
-            if (action.charAt(0) === '/' || action.indexOf(ORIGIN + '/') === 0) {
+            var qs = new URLSearchParams(new FormData(form)).toString();
+            if (qs || action) {
               e.preventDefault();
               e.stopPropagation();
-              var qs = new URLSearchParams(new FormData(form)).toString();
               var sep = action.indexOf('?') >= 0 ? '&' : '?';
-              var target = redirectToProxy(action) + (qs ? sep + qs : '');
-              window.location.href = target;
+              window.location.href = redirectToProxy(action) + (qs ? sep + qs : '');
             }
           } catch (err) {}
-        }, true);
+        }
+        document.addEventListener('submit', onFormSubmit, true);
+
+        // ---- HTMLFormElement.prototype.submit override ----
+        // form.submit() does NOT fire a 'submit' event, so patch the method directly.
+        try {
+          var _formSubmit = HTMLFormElement.prototype.submit;
+          HTMLFormElement.prototype.submit = function() {
+            try {
+              var action = this.getAttribute('action') || this.action || '';
+              if (action.indexOf('/proxy/') !== 0) {
+                var qs = new URLSearchParams(new FormData(this)).toString();
+                var sep = action.indexOf('?') >= 0 ? '&' : '?';
+                window.location.href = redirectToProxy(action) + (qs ? sep + qs : '');
+                return;
+              }
+            } catch (e) {}
+            return _formSubmit.call(this);
+          };
+        } catch (e) {}
+
+        // ---- Recursively patch shadow roots ----
+        function patchShadowRoots(root) {
+          try {
+            var all = root.querySelectorAll ? root.querySelectorAll('*') : [];
+            for (var i = 0; i < all.length; i++) {
+              var el = all[i];
+              if (el.shadowRoot) {
+                el.shadowRoot.addEventListener('submit', onFormSubmit, true);
+                patchShadowRoots(el.shadowRoot);
+              }
+            }
+          } catch (e) {}
+        }
+        patchShadowRoots(document);
+
+        // Watch for new shadow roots (Google/YouTube create them dynamically)
+        try {
+          new MutationObserver(function() {
+            patchShadowRoots(document);
+          }).observe(document.documentElement, { childList: true, subtree: true });
+        } catch (e) {}
 
         // ---- fetch patch ----
         var _fetch = window.fetch;
