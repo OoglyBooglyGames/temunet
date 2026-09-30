@@ -1,4 +1,4 @@
-const VERSION = "1.1.10";
+const VERSION = "1.1.11";
 
 // ---------- Status ----------
 function setStatus(msg, cls = '') {
@@ -25,9 +25,9 @@ if (aboutRuntimeEl) {
 let swReadyPromise = Promise.resolve(false);
 
 if (!('serviceWorker' in navigator)) {
-  setStatus('SW not supported', 'err');
+  setStatus('Not Supported!', 'err');
 } else {
-  setStatus('registering…');
+  setStatus('hehe');
 
   swReadyPromise = (async () => {
     try {
@@ -59,8 +59,6 @@ if (!('serviceWorker' in navigator)) {
     }
   })();
 }
-
-// Reload once after first SW takes over
 (async () => {
   if (!('serviceWorker' in navigator)) return;
   await navigator.serviceWorker.ready;
@@ -68,8 +66,6 @@ if (!('serviceWorker' in navigator)) {
     setTimeout(() => window.location.reload(), 300);
   }
 })();
-
-// ---------- Navigation ----------
 function go() {
   let input = document.getElementById('url').value.trim();
   if (!input) return;
@@ -106,15 +102,13 @@ async function loadUrl(url) {
   });
 
   await new Promise(r => setTimeout(r, 50));
-  document.getElementById('frame').src = '/proxy/' + url;
+  document.getElementById('frame').src = '/learn/' + url.replace(/^(https?):\/\//, '$1:/');
 }
 
 function reloadFrame() {
   const frame = document.getElementById('frame');
   frame.src = frame.src;
 }
-
-// ---------- About modal ----------
 function openAbout() {
   document.getElementById('about-modal').classList.add('open');
 }
@@ -122,8 +116,6 @@ function closeAbout(e) {
   if (e && e.target !== e.currentTarget) return;
   document.getElementById('about-modal').classList.remove('open');
 }
-
-// ---------- Events ----------
 document.getElementById('url').addEventListener('keydown', e => {
   if (e.key === 'Enter') go();
 });

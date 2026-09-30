@@ -1,9 +1,20 @@
 console.log('[SW] script loaded');
 
-const PROXY = '/proxy/';
+const PROXY = '/learn/';
+
+// Vercel collapses https:// to https:/ in URL paths before routing.
+// Pre-collapse on our side so the URL we emit matches what Vercel expects,
+// and the handler un-collapses it on the way back in.
+function collapseScheme(u) {
+  return String(u).replace(/^(https?):\/\//, '$1:/');
+}
+
+function proxyUrl(u) {
+  return PROXY + collapseScheme(u);
+}
 
 // Hosts whose cross-origin requests get intercepted and routed through the proxy.
-// Keep in sync with FORCE_PROXY_HOSTS in api/proxy.js.
+// Keep in sync with FORCE_PROXY_HOSTS in api/learn.js.
 const FORCE_HOSTS = [
   'reddit.com',
   'redditstatic.com',
@@ -42,10 +53,7 @@ async function setStoredOrigin(origin) {
 }
 
 async function getStoredOrigin() {
-  // 1. In-memory
   if (storedOrigin) return storedOrigin;
-
-  // 2. Cache API
   try {
     const cache = await caches.open('proxy-meta');
     const res = await cache.match('/origin');
@@ -54,7 +62,6 @@ async function getStoredOrigin() {
       return storedOrigin;
     }
   } catch (e) {}
-
   return null;
 }
 
@@ -65,12 +72,9 @@ self.addEventListener('message', event => {
   }
 });
 
-// ---------- Referrer-based origin inference ----------
-// If the cache/memory is empty, try to recover the origin from the request's
-// referrer (which looks like http://localhost:3000/proxy/https://site.com/...).
 function originFromReferer(referer) {
   if (!referer) return null;
-  const m = referer.match(/\/proxy\/(https?:\/\/[^\/]+)/);
+  const m = referer.match(/\/learn\/(https?:\/\/[^\/]+)/);
   return m ? m[1] : null;
 }
 
@@ -85,7 +89,7 @@ self.addEventListener('fetch', event => {
     url.pathname === '/app.js' ||
     url.pathname === '/style.css' ||
     url.pathname === '/sw.js' ||
-    url.pathname.startsWith('/proxy/') ||
+    url.pathname.startsWith('/learn/') ||
     url.pathname.startsWith('/api/')
   ) {
     return;
@@ -94,20 +98,16 @@ self.addEventListener('fetch', event => {
   const isSameOrigin = url.origin === self.location.origin;
   const isCrossOriginForced = !isSameOrigin && isForced(url.hostname);
 
-  // Only intercept same-origin requests or cross-origin requests on the force list
   if (!isSameOrigin && !isCrossOriginForced) return;
 
   event.respondWith((async () => {
     let absolute;
 
     if (isCrossOriginForced) {
-      // Cross-origin requests already have the full URL
       absolute = url.href;
     } else {
-      // Same-origin requests need an origin to reconstruct against
       let origin = await getStoredOrigin();
 
-      // Fallback 1: infer from the request's referrer
       if (!origin) {
         origin = originFromReferer(event.request.referrer);
         if (origin) {
@@ -115,13 +115,11 @@ self.addEventListener('fetch', event => {
           setStoredOrigin(origin);
         }
       }
-
-      // Fallback 2: use the tab's own URL if it's a proxied page
       if (!origin) {
         try {
           const client = await self.clients.get(event.clientId);
           if (client && client.url) {
-            const m = client.url.match(/\/proxy\/(https?:\/\/[^\/]+)/);
+            const m = client.url.match(/\/learn\/(https?:\/\/[^\/]+)/);
             if (m) {
               origin = m[1];
               console.log('[SW] inferred origin from client url:', origin);
@@ -139,7 +137,8 @@ self.addEventListener('fetch', event => {
       absolute = origin + url.pathname + url.search;
     }
 
-    const proxied = PROXY + absolute;
+    // Pre-collapse https:// → https:/ so Vercel's router doesn't reject it
+    const proxied = proxyUrl(absolute);
 
     const method = event.request.method;
     const init = {
@@ -154,8 +153,6 @@ self.addEventListener('fetch', event => {
       init.body = await event.request.clone().arrayBuffer();
     }
 
-    // Strip Origin and Referer — Vercel sets its own, and leaving localhost
-    // causes some CDNs to reject the request.
     try {
       const headers = new Headers(event.request.headers);
       headers.delete('Origin');

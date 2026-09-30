@@ -97,10 +97,18 @@ function shouldSkipRewrite(targetUrl, js) {
   return false;
 }
 
+// ---------- URL PRE-COLLAPSE ----------
+// Vercel's edge collapses https:// to https:/ in URL paths before routing.
+// We pre-collapse on our side so the URL we emit matches what Vercel expects,
+// and the handler un-collapses it on the way back in.
+function collapseScheme(u) {
+  return String(u).replace(/^(https?):\/\//, '$1:/');
+}
+
 export default async function handler(req, res) {
   if (!req.query.url && req.url && req.url !== '/') {
     const referer = req.headers.referer || '';
-    const m = referer.match(/\/proxy\/(https?:\/\/[^\/]+)/);
+    const m = referer.match(/\/learn\/(https?:\/\/[^\/]+)/);
     if (m) {
       req.query.url = m[1] + req.url.split('?')[0] +
         (req.url.includes('?') ? '?' + req.url.split('?').slice(1).join('?') : '');
@@ -232,7 +240,7 @@ export default async function handler(req, res) {
 
   } catch (err) {
     console.error(err);
-    return res.status(502).send('Proxy error: ' + err.message);
+    return res.status(502).send('Learning error: ' + err.message);
   }
 }
 
@@ -241,9 +249,8 @@ export default async function handler(req, res) {
 function proxify(rawUrl, baseUrl) {
   try {
     const abs = new URL(rawUrl, baseUrl).href;
-    if (shouldForceProxy(abs)) return '/proxy/' + abs;
-    if (shouldBypass(abs)) return abs;
-    return '/proxy/' + abs;
+    if (shouldBypass(abs) && !shouldForceProxy(abs)) return abs;
+    return '/learn/' + collapseScheme(abs);
   } catch {
     return rawUrl;
   }
@@ -273,11 +280,11 @@ function rewriteJS(js, baseUrl) {
     if (s.startsWith('#')) return false;
 
     if (shouldForceProxy(s)) {
-      if (s.startsWith('/proxy/')) return false;
+      if (s.startsWith('/learn/')) return false;
       return true;
     }
 
-    if (s.startsWith('/proxy/')) return false;
+    if (s.startsWith('/learn/')) return false;
     if (s.startsWith('/')) return true;
     if (s.startsWith('http://') || s.startsWith('https://') || s.startsWith('//')) return true;
     return false;
@@ -285,11 +292,10 @@ function rewriteJS(js, baseUrl) {
 
   function rewrite(raw) {
     try {
-      if (raw.startsWith('/proxy/')) return raw;
+      if (raw.startsWith('/learn/')) return raw;
       const abs = new URL(raw, baseUrl).href;
-      if (shouldForceProxy(abs)) return '/proxy/' + abs;
-      if (shouldBypass(abs)) return raw;
-      return '/proxy/' + abs;
+      if (shouldBypass(abs) && !shouldForceProxy(abs)) return raw;
+      return '/learn/' + collapseScheme(abs);
     } catch {
       return raw;
     }
@@ -375,8 +381,16 @@ function rewriteHTML(html, baseUrl) {
     <script>
       (function() {
         var ORIGIN = ${JSON.stringify(baseOrigin)};
-        var PROXY_PREFIX = '/proxy/';
+        var PROXY_PREFIX = '/learn/';
         var FORCE_HOSTS = ${JSON.stringify(FORCE_PROXY_HOSTS)};
+
+        function collapseScheme(u) {
+          return String(u).replace(/^(https?):\\/\\//, '$1:/');
+        }
+
+        function proxyUrl(u) {
+          return PROXY_PREFIX + collapseScheme(u);
+        }
 
         function isForced(url) {
           try {
@@ -393,7 +407,7 @@ function rewriteHTML(html, baseUrl) {
         function absolute(u) {
           try {
             if (typeof u !== 'string') return u;
-            if (u.indexOf('/proxy/') === 0) return u;
+            if (u.indexOf('/learn/') === 0) return u;
             if (u.charAt(0) === '/') return ORIGIN + u;
             return u;
           } catch (e) { return u; }
@@ -403,11 +417,11 @@ function rewriteHTML(html, baseUrl) {
         function redirectToProxy(u) {
           try {
             if (typeof u !== 'string') return u;
-            if (u.indexOf('/proxy/') === 0) return u;
-            if (u.charAt(0) === '/') return PROXY_PREFIX + ORIGIN + u;
-            if (u.indexOf(ORIGIN + '/') === 0) return PROXY_PREFIX + u;
+            if (u.indexOf('/learn/') === 0) return u;
+            if (u.charAt(0) === '/') return proxyUrl(ORIGIN + u);
+            if (u.indexOf(ORIGIN + '/') === 0) return proxyUrl(u);
             if (u.indexOf('http://') === 0 || u.indexOf('https://') === 0) {
-              return PROXY_PREFIX + u;
+              return proxyUrl(u);
             }
             return u;
           } catch (e) {
@@ -436,7 +450,7 @@ function rewriteHTML(html, baseUrl) {
             if (!a) return;
             var href = a.getAttribute('href');
             if (!href) return;
-            if (href.indexOf('/proxy/') === 0) return;
+            if (href.indexOf('/learn/') === 0) return;
             if (href.charAt(0) === '#' || href.indexOf('javascript:') === 0) return;
             if (href.charAt(0) === '/' || href.indexOf(ORIGIN + '/') === 0 ||
                 href.indexOf('http://') === 0 || href.indexOf('https://') === 0) {
@@ -453,7 +467,7 @@ function rewriteHTML(html, baseUrl) {
             var form = e.target;
             if (!form || form.tagName !== 'FORM') return;
             var action = form.getAttribute('action') || '';
-            if (action.indexOf('/proxy/') === 0) return;
+            if (action.indexOf('/learn/') === 0) return;
             var qs = new URLSearchParams(new FormData(form)).toString();
             if (qs || action) {
               e.preventDefault();
@@ -466,13 +480,12 @@ function rewriteHTML(html, baseUrl) {
         document.addEventListener('submit', onFormSubmit, true);
 
         // ---- HTMLFormElement.prototype.submit override ----
-        // form.submit() does NOT fire a 'submit' event, so patch the method directly.
         try {
           var _formSubmit = HTMLFormElement.prototype.submit;
           HTMLFormElement.prototype.submit = function() {
             try {
               var action = this.getAttribute('action') || this.action || '';
-              if (action.indexOf('/proxy/') !== 0) {
+              if (action.indexOf('/learn/') !== 0) {
                 var qs = new URLSearchParams(new FormData(this)).toString();
                 var sep = action.indexOf('?') >= 0 ? '&' : '?';
                 window.location.href = redirectToProxy(action) + (qs ? sep + qs : '');
@@ -498,7 +511,6 @@ function rewriteHTML(html, baseUrl) {
         }
         patchShadowRoots(document);
 
-        // Watch for new shadow roots (Google/YouTube create them dynamically)
         try {
           new MutationObserver(function() {
             patchShadowRoots(document);
@@ -514,10 +526,10 @@ function rewriteHTML(html, baseUrl) {
               var abs = absolute(u);
               var forced = isForced(abs);
               var needsProxy = forced ||
-                (typeof u === 'string' && u.charAt(0) === '/' && u.indexOf('/proxy/') !== 0);
+                (typeof u === 'string' && u.charAt(0) === '/' && u.indexOf('/learn/') !== 0);
 
-              if (needsProxy && u.indexOf('/proxy/') !== 0) {
-                var proxied = '/proxy/' + abs;
+              if (needsProxy && u.indexOf('/learn/') !== 0) {
+                var proxied = proxyUrl(abs);
                 if (typeof input === 'string') input = proxied;
                 else input = new Request(proxied, input);
               }
@@ -531,10 +543,10 @@ function rewriteHTML(html, baseUrl) {
           try {
             if (typeof url === 'string') {
               var abs = absolute(url);
-              if (isForced(abs) && url.indexOf('/proxy/') !== 0) {
-                arguments[1] = '/proxy/' + abs;
-              } else if (url.charAt(0) === '/' && url.indexOf('/proxy/') !== 0) {
-                arguments[1] = '/proxy/' + abs;
+              if (isForced(abs) && url.indexOf('/learn/') !== 0) {
+                arguments[1] = proxyUrl(abs);
+              } else if (url.charAt(0) === '/' && url.indexOf('/learn/') !== 0) {
+                arguments[1] = proxyUrl(abs);
               }
             }
           } catch (e) {}
@@ -547,9 +559,9 @@ function rewriteHTML(html, baseUrl) {
             Object.defineProperty(HTMLImageElement.prototype, 'src', {
               set: function(v) {
                 try {
-                  if (typeof v === 'string' && v.indexOf('/proxy/') !== 0) {
+                  if (typeof v === 'string' && v.indexOf('/learn/') !== 0) {
                     var abs = absolute(v);
-                    if (isForced(abs)) v = '/proxy/' + abs;
+                    if (isForced(abs)) v = proxyUrl(abs);
                   }
                 } catch (e) {}
                 return _imgSrcDesc.set.call(this, v);
@@ -563,12 +575,12 @@ function rewriteHTML(html, baseUrl) {
           var _setAttr = Element.prototype.setAttribute;
           Element.prototype.setAttribute = function(name, value) {
             try {
-              if (typeof value === 'string' && value.indexOf('/proxy/') !== 0) {
+              if (typeof value === 'string' && value.indexOf('/learn/') !== 0) {
                 if (name === 'src' || name === 'href' || name === 'srcset' ||
                     name === 'data-src' || name === 'data-href' || name === 'data-url' ||
                     name === 'action' || name === 'poster') {
                   var abs = absolute(value);
-                  if (isForced(abs)) value = '/proxy/' + abs;
+                  if (isForced(abs)) value = proxyUrl(abs);
                 }
               }
             } catch (e) {}
@@ -578,8 +590,8 @@ function rewriteHTML(html, baseUrl) {
 
         function cleanPath() {
           var p = location.pathname;
-          if (p.indexOf(PROXY_PREFIX) === 0) {
-            var rest = p.slice(PROXY_PREFIX.length);
+          if (p.indexOf('/learn/') === 0) {
+            var rest = p.slice('/learn/'.length);
             try {
               var u = new URL(rest);
               return u.pathname + u.search + u.hash;
@@ -600,8 +612,8 @@ function rewriteHTML(html, baseUrl) {
         history.pushState = function(state, title, url) {
           var clean = url;
           try {
-            if (typeof url === 'string' && url.indexOf(PROXY_PREFIX) !== 0) {
-              clean = PROXY_PREFIX + ORIGIN + url;
+            if (typeof url === 'string' && url.indexOf('/learn/') !== 0) {
+              clean = proxyUrl(ORIGIN + url);
             }
           } catch (e) {}
           return _pushState.call(this, state, title, clean);
@@ -610,8 +622,8 @@ function rewriteHTML(html, baseUrl) {
         history.replaceState = function(state, title, url) {
           var clean = url;
           try {
-            if (typeof url === 'string' && url.indexOf(PROXY_PREFIX) !== 0) {
-              clean = PROXY_PREFIX + ORIGIN + url;
+            if (typeof url === 'string' && url.indexOf('/learn/') !== 0) {
+              clean = proxyUrl(ORIGIN + url);
             }
           } catch (e) {}
           return _replaceState.call(this, state, title, clean);
@@ -629,7 +641,7 @@ function rewriteHTML(html, baseUrl) {
         function safeReload() {
           reloadCount++;
           if (reloadCount > 2) {
-            console.warn('[TemuNet] reload loop detected — stopping');
+            console.warn('[Study Client] reload loop detected — stopping');
             return;
           }
           clearTimeout(reloadTimer);
@@ -650,7 +662,7 @@ function rewriteHTML(html, baseUrl) {
       const val = $(el).attr(attr);
       if (!val) return;
       if (val.startsWith('data:') || val.startsWith('javascript:') || val.startsWith('blob:') || val.startsWith('#')) return;
-      if (val.startsWith('/proxy/')) return;
+      if (val.startsWith('/learn/')) return;
       $(el).attr(attr, proxify(val, baseUrl));
     });
   });
@@ -689,7 +701,7 @@ function rewriteHTML(html, baseUrl) {
 
 function rewriteCSS(css, baseUrl) {
   return css.replace(/url\((['"]?)(.*?)\1\)/g, (m, q, u) => {
-    if (u.startsWith('data:') || u.startsWith('blob:') || u.startsWith('/proxy/')) return m;
+    if (u.startsWith('data:') || u.startsWith('blob:') || u.startsWith('/learn/')) return m;
     return "url('" + proxify(u, baseUrl) + "')";
   });
 }

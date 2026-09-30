@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>TemuNet</title>
+  <title>Study Client</title>
   <link rel="stylesheet" href="/style.css" />
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8C%90%3C/text%3E%3C/svg%3E" />
 </head>
@@ -46,7 +46,7 @@
   <div id="welcome-modal" class="modal-backdrop">
     <div class="modal">
       <div class="modal-header">
-        <h2>Welcome to TemuNet</h2>
+        <h2>Welcome to Study Client</h2>
       </div>
 
         <div class="feature works" style="border-left-color: #fbbf24;">
@@ -74,7 +74,7 @@
   <div id="about-modal" class="modal-backdrop" onclick="closeAbout(event)">
     <div class="modal" onclick="event.stopPropagation()">
       <div class="modal-header">
-        <h2>TemuNet</h2>
+        <h2>Study Client</h2>
         <button class="icon-btn" onclick="closeAbout()" title="Close">✕</button>
       </div>
 
@@ -117,7 +117,7 @@
   <script>
     // Show welcome modal on first visit only
     (function() {
-      var KEY = 'temunet_welcome_seen_v1';
+      var KEY = 'sc_welcome_seen_v1';
       var seen = false;
       try { seen = localStorage.getItem(KEY) === '1'; } catch (e) {}
       if (!seen) {
@@ -129,7 +129,7 @@
     function closeWelcome() {
       var m = document.getElementById('welcome-modal');
       if (m) m.classList.remove('open');
-      try { localStorage.setItem('temunet_welcome_seen_v1', '1'); } catch (e) {}
+      try { localStorage.setItem('sc_welcome_seen_v1', '1'); } catch (e) {}
     }
   </script>
 
