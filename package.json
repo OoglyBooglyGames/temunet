@@ -1,9 +1,13 @@
 {
-  "name": "temunet",
+  "name": "study-client",
   "version": "1.0.0",
   "description": "A fast, lightweight school proxy.",
   "type": "module",
   "private": true,
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/OoglyBooglyGames/temunet.git"
@@ -15,10 +19,14 @@
     "url": "https://github.com/OoglyBooglyGames/temunet/issues"
   },
   "homepage": "https://github.com/OoglyBooglyGames/temunet#readme",
+  "engines": {
+    "node": ">=20.18.1"
+  },
   "dependencies": {
     "acorn": "^8.18.0",
     "acorn-walk": "^8.3.5",
     "cheerio": "^1.2.0",
+    "express": "^4.21.2",
     "magic-string": "^0.30.10"
   }
 }

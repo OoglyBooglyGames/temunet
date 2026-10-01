@@ -1,4 +1,4 @@
-const VERSION = "1.1.11";
+const VERSION = "1.1.12";
 
 // ---------- Status ----------
 function setStatus(msg, cls = '') {
@@ -21,6 +21,7 @@ if (aboutRuntimeEl) {
   const chromeVer = (navigator.userAgent.match(/Chrome\/(\d+)/) || [])[1] || '?';
   aboutRuntimeEl.textContent = 'Chrome ' + chromeVer + ' / SW';
 }
+
 // ---------- Service Worker ----------
 let swReadyPromise = Promise.resolve(false);
 
@@ -59,6 +60,7 @@ if (!('serviceWorker' in navigator)) {
     }
   })();
 }
+
 (async () => {
   if (!('serviceWorker' in navigator)) return;
   await navigator.serviceWorker.ready;
@@ -66,6 +68,7 @@ if (!('serviceWorker' in navigator)) {
     setTimeout(() => window.location.reload(), 300);
   }
 })();
+
 function go() {
   let input = document.getElementById('url').value.trim();
   if (!input) return;
@@ -102,20 +105,27 @@ async function loadUrl(url) {
   });
 
   await new Promise(r => setTimeout(r, 50));
-  document.getElementById('frame').src = '/learn/' + url.replace(/^(https?):\/\//, '$1:/');
+
+  // Collapse https:// → https:/ so the path stays a single segment.
+  // The /learn/* route on the server un-collapses it on the way in.
+  document.getElementById('frame').src =
+    '/learn/' + url.replace(/^(https?):\/\//, '$1:/');
 }
 
 function reloadFrame() {
   const frame = document.getElementById('frame');
   frame.src = frame.src;
 }
+
 function openAbout() {
   document.getElementById('about-modal').classList.add('open');
 }
+
 function closeAbout(e) {
   if (e && e.target !== e.currentTarget) return;
   document.getElementById('about-modal').classList.remove('open');
 }
+
 document.getElementById('url').addEventListener('keydown', e => {
   if (e.key === 'Enter') go();
 });

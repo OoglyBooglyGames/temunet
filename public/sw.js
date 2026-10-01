@@ -2,9 +2,8 @@ console.log('[SW] script loaded');
 
 const PROXY = '/learn/';
 
-// Vercel collapses https:// to https:/ in URL paths before routing.
-// Pre-collapse on our side so the URL we emit matches what Vercel expects,
-// and the handler un-collapses it on the way back in.
+// Collapse https:// → https:/ so the URL path stays a single segment
+// (avoids // being normalized away by the browser or Express).
 function collapseScheme(u) {
   return String(u).replace(/^(https?):\/\//, '$1:/');
 }
@@ -14,7 +13,7 @@ function proxyUrl(u) {
 }
 
 // Hosts whose cross-origin requests get intercepted and routed through the proxy.
-// Keep in sync with FORCE_PROXY_HOSTS in api/learn.js.
+// Keep in sync with FORCE_PROXY_HOSTS in server.js.
 const FORCE_HOSTS = [
   'reddit.com',
   'redditstatic.com',
@@ -82,15 +81,20 @@ function originFromReferer(referer) {
 self.addEventListener('fetch', event => {
   const url = new URL(event.request.url);
 
-  // Pass through our own files
+  // Pass through our own files.
+  // NOTE: '/api/' was the Vercel serverless prefix. On Fly, the handler is
+  // mounted at '/learn' and '/learn/*', so those are the paths we skip.
   if (
     url.pathname === '/' ||
     url.pathname === '/index.html' ||
     url.pathname === '/app.js' ||
     url.pathname === '/style.css' ||
     url.pathname === '/sw.js' ||
-    url.pathname.startsWith('/learn/') ||
-    url.pathname.startsWith('/api/')
+    url.pathname.startsWith('/learn') ||
+    url.pathname.startsWith('/js/concat') ||
+    url.pathname.startsWith('/search') ||
+    url.pathname.startsWith('/results') ||
+    url.pathname.startsWith('/watch')
   ) {
     return;
   }
@@ -137,7 +141,7 @@ self.addEventListener('fetch', event => {
       absolute = origin + url.pathname + url.search;
     }
 
-    // Pre-collapse https:// → https:/ so Vercel's router doesn't reject it
+    // Collapse https:// → https:/ so the URL path stays a single segment.
     const proxied = proxyUrl(absolute);
 
     const method = event.request.method;
